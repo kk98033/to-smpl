@@ -1,0 +1,6 @@
+numpy>=1.24,<2
+scipy>=1.10
+torch>=2.1
+smplx>=0.1.28
+chumpy>=0.70
+

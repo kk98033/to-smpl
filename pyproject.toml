@@ -1,0 +1,28 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "smpl-0901-bridge"
+version = "0.1.0"
+description = "Factory-59 joints to SMPL and Unity Protocol V2 live bridge"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+  "numpy>=1.24,<2",
+  "scipy>=1.10",
+  "torch>=2.1",
+  "smplx>=0.1.28",
+  "chumpy>=0.70",
+]
+
+[project.scripts]
+smpl-0901-bridge = "smpl_0901.service:main"
+smpl-0901-send = "smpl_0901.sender:main"
+
+[tool.setuptools.packages.find]
+include = ["smpl_0901*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+

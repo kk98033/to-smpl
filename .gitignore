@@ -1,0 +1,19 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.venv/
+venv/
+dist/
+build/
+
+# Runtime artifacts
+*.sock
+*.log
+outputs/
+
+# Unity generated folders
+unity/Library/
+unity/Temp/
+unity/Logs/
+unity/obj/
