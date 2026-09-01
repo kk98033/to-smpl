@@ -8,7 +8,7 @@
 
 ## 1. 系統全景架構圖 (End-to-End Architecture)
 
-本圖清楚展示從工廠相機端到 Unity 3D 數位分身的全鏈路架構，並標註 **本 Repository (`to-smpl`)** 所處的位置與介面：
+本圖清楚展示從工廠相機端到 Unity 3D 數位分身的全鏈路架構，並標註 **本 Repository (`to-smpl`)** 所處的位置（區塊 3）：
 
 ```text
 +---------------------------------------------------------------------------------------------------+
@@ -22,39 +22,53 @@
        ▼                                                    ▼
 +---------------------------------------------------------------------------------------------------+
 | 2. 即時 3D 姿態估計管線 (LivePosePipeline / dt-pose)                                               |
-|    - PtpFrameJoiner 多相機時間窗配對 (±20ms 容差, 支援循環重播/時間戳倒退重置)                    |
-|    - TensorRT 2D Pose 推理: YOLOX-M (人體偵測) + RTMW-x 256x192 (133 點 WholeBody)                |
-|    - 3D DLT 幾何三角化: OpenCV 相機去畸變 (intri.yml) + SVD 求解世界 3D 空間座標 (extri.yml)      |
+|                                                                                                   |
+|   [CameraReceiver]                                                                                |
+|          │                                                                                        |
+|          ▼                                                                                        |
+|   [PtpFrameJoiner]  ───► 滑動時間窗配對 (±20ms 容差, 支援循環重播/時間戳倒退重置)                 |
+|          │                                                                                        |
+|          ▼ (JoinedFrameSet: 3 視角同一瞬間影格)                                                    |
+|   [TensorRT 2D Pose 推理] (FP16 / GPU)                                                            |
+|          ├─► YOLOX-M: 人員方框偵測 (含多人員容錯與信心度主目標挑選)                                |
+|          └─► RTMW-x 256x192: 133 點 WholeBody 估計 ──► 擷取 59 點 (Body17 + 雙手 Hand42)         |
+|          │                                                                                        |
+|          ▼                                                                                        |
+|   [3D DLT 幾何三角化] (DLTTriangulator)                                                           |
+|          ├─► cv2.undistortPoints: OpenCV 相機內參去畸變 (intri.yml)                               |
+|          └─► SVD 最小平方法: 結合相機外參矩陣 P = K[R|T] 求解 3D 空間座標 (extri.yml)             |
+|          │                                                                                        |
+|          ▼                                                                                        |
+|   [FanoutSink 雙向分流]                                                                           |
 +---------------------------------------------------------------------------------------------------+
+          │                                                                     │
+          │ UDP Socket (JSON: factory_59pt_body_hands)                          │ IPC / HTTP API
+          │ udp://127.0.0.1:9100                                                │ relative_3d.jsonl + JPEG
+          ▼                                                                     ▼
++----------------------------------------------------+   +------------------------------------------+
+| 3. SMPL 0901 Bridge (to-smpl) 📍【本 REPO】        |   | 4. 即時 2x2 監看面板 (Dashboard)          |
+|                                                    |   |                                          |
+|   [Non-blocking Drain Socket Receiver]             |   |   - 3 相機即時影像串流 (10 FPS 預載更新) |
+|   (清空排隊舊幀，保持零延遲串流)                   |   |   - 3D Pelvis 根節點人體骨架渲染         |
+|          │                                         |   |   - 攝影機視角鎖定 (零晃動/零拉伸)       |
+|          ▼                                         |   |   - Web 服務埠號: http://127.0.0.1:8088  |
+|   [Fixed Betas 體型校正] (前 10 幀鎖定骨長)        |   +------------------------------------------+
+|          │                                         |
+|          ▼                                         |
+|   [Soft-target GPU 擬合] (PyTorch CUDA, 100 iters) |
+|   - 求解 global_orient, body_pose (24 關節四元數)  |
+|   - 求解 translation (骨盆 Root Motion)            |
+|   - 手部 Wrist-Local 局部座標轉換                  |
+|          │                                         |
+|          ▼                                         |
+|   [Protocol V2 Binary 打包]                        |
++----------------------------------------------------+
           │
-          │ 【輸入串流】UDP Datagram (JSON: factory_59pt_body_hands)
-          │ udp://0.0.0.0:9100
-          ▼
-+═══════════════════════════════════════════════════════════════════════════════════════════════════+
-║ 📍【本 REPOSITORY: to-smpl (smpl-0901-bridge)】                                                   ║
-║                                                                                                   ║
-║   [Non-blocking Drain Socket Receiver]                                                            ║
-║   - 監聽 udp://0.0.0.0:9100，忙碌時自動清空積壓舊幀，永遠只算最新一幀，零延遲積壓                 ║
-║          │                                                                                        ║
-║          ▼                                                                                        ║
-║   [Fixed Betas 體型校正模組]                                                                      ║
-║   - 啟動後收集前 10 幀有效姿態估計工人體型參數 (betas)，之後全程鎖定骨長，消除動態抖動            ║
-║          │                                                                                        ║
-║          ▼                                                                                        ║
-║   [Soft-target GPU 擬合求解器] (PyTorch CUDA, 100 iters @ ~31.9ms / 31.3 FPS)                     ║
-║   - 求解 global_orient (人體朝向) 與 body_pose (23 個關節旋轉四元數)                              ║
-║   - 求解 translation (骨盆 Root Motion 相對位移，消除世界座標跳動)                                ║
-║   - 手部 Wrist-Local 局部座標轉換 (保留原始 Hand42 關鍵點幾何)                                    ║
-║          │                                                                                        ║
-║          ▼                                                                                        ║
-║   [Protocol V2 Binary 打包器]                                                                     ║
-+═══════════════════════════════════════════════════════════════════════════════════════════════════+
-          │
-          │ 【輸出串流】UDP Datagram (SMV2 高效二進位封包, 1389 Bytes)
-          │ udp://UNITY_IP:9095
+          │ UDP Socket (SMV2 二進位高效封包, 1389 Bytes)
+          │ udp://127.0.0.1:9095
           ▼
 +---------------------------------------------------------------------------------------------------+
-| 4. Unity 3D 數位分身播放器 (Unity Hybrid Player)                                                  |
+| 5. Unity 3D 數位分身播放器 (Unity Hybrid Player)                                                  |
 |    - ProtocolV2Decoder: 二進位封包即時解析                                                        |
 |    - SMPL Body Pose: 驅動 24 處身體骨骼旋轉與骨盆位移 (Root Motion)                                |
 |    - RawHandRetargeter: 驅動雙手 10 根手指靈活動態                                                |
