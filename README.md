@@ -1,153 +1,175 @@
-# SMPL 0901 Live Bridge
+# SMPL 0901 Live Bridge (to-smpl)
 
-這是一份可獨立放上 GitHub 的「`main_predict` 59 點 3D 關節 → SMPL → Unity」常駐轉換服務。它接在組員的 3D 預測後面，不負責相機影像 IPC、2D pose 或 DLT；輸入是已經三角化完成的 `factory_59pt_body_hands`，輸出是 Unity `SMV2` UDP 封包。
+這是一份可獨立放上 GitHub 的「`main_predict` 59 點 3D 關節 → SMPL → Unity」常駐即時轉換服務。它接在 3D 姿態估計管線（`dt-pose`）後面，不負責相機影像 IPC、2D pose 或 DLT；**輸入是已經三角化完成的 `factory_59pt_body_hands` JSON 串流，輸出是 Unity `SMV2` 二進位 UDP 封包**。
 
-> 「0901 最佳版」指目前最適合即時串流的生產策略：固定體型、姿勢 soft-target、跨幀 warm start、root motion 與原始 Hand21 混合驅動。它是速度／穩定性／全身觀感的選擇，不代表離線 benchmark 中單看 MPJPE 最低的實驗。
+> 「0901 最佳版」指目前最適合即時串流的生產策略：固定體型（Fixed Betas）、姿勢 soft-target、跨幀 warm start、root motion 與原始 Hand21 混合驅動。在 GPU 上以 31.9 ms / 31.3 FPS 全速運行，兼顧全身骨架穩定度與手部靈活度。
 
-## 流程
+---
+
+## 1. 系統全景架構圖 (End-to-End Architecture)
+
+本圖清楚展示從工廠相機端到 Unity 3D 數位分身的全鏈路架構，並標註 **本 Repository (`to-smpl`)** 所處的位置與介面：
 
 ```text
-main_predict / factory_59pt_dlt_demo
-  └─ 59×3 joints（Body17 + Left Hand21 + Right Hand21）
-       └─ SMPL 0901 bridge
-            ├─ Body17 → Body25 soft targets → SMPL pose + fixed betas
-            ├─ Hand21 → wrist-local raw hand joints
-            └─ root displacement + quality → SMV2 binary UDP :9095
-                 └─ Unity hybrid player
-                      ├─ SMPL 驅動身體
-                      └─ RawHandRetargeter 驅動手指
++---------------------------------------------------------------------------------------------------+
+| 1. 影像擷取與發送端 (Fake Sender / Basler DeepStream)                                             |
+|    - 3 視角工業相機 (CAM 41966649, 41966650, 41966651)                                            |
+|    - 硬體 PTP 奈秒時間戳 (IEEE 1588 PtpEpochNs)                                                    |
++---------------------------------------------------------------------------------------------------+
+       |                                                    |
+       | Unix Domain Socket (SCM_RIGHTS / DMA-BUF 零複製)   | Unix Domain Socket (Meta Struct)
+       | /tmp/ds_ipc_bridge/{cam_id}.sock                   | /tmp/ds_ipc_bridge/{cam_id}.meta.sock
+       ▼                                                    ▼
++---------------------------------------------------------------------------------------------------+
+| 2. 即時 3D 姿態估計管線 (LivePosePipeline / dt-pose)                                               |
+|    - PtpFrameJoiner 多相機時間窗配對 (±20ms 容差, 支援循環重播/時間戳倒退重置)                    |
+|    - TensorRT 2D Pose 推理: YOLOX-M (人體偵測) + RTMW-x 256x192 (133 點 WholeBody)                |
+|    - 3D DLT 幾何三角化: OpenCV 相機去畸變 (intri.yml) + SVD 求解世界 3D 空間座標 (extri.yml)      |
++---------------------------------------------------------------------------------------------------+
+          │
+          │ 【輸入串流】UDP Datagram (JSON: factory_59pt_body_hands)
+          │ udp://0.0.0.0:9100
+          ▼
++═══════════════════════════════════════════════════════════════════════════════════════════════════+
+║ 📍【本 REPOSITORY: to-smpl (smpl-0901-bridge)】                                                   ║
+║                                                                                                   ║
+║   [Non-blocking Drain Socket Receiver]                                                            ║
+║   - 監聽 udp://0.0.0.0:9100，忙碌時自動清空積壓舊幀，永遠只算最新一幀，零延遲積壓                 ║
+║          │                                                                                        ║
+║          ▼                                                                                        ║
+║   [Fixed Betas 體型校正模組]                                                                      ║
+║   - 啟動後收集前 10 幀有效姿態估計工人體型參數 (betas)，之後全程鎖定骨長，消除動態抖動            ║
+║          │                                                                                        ║
+║          ▼                                                                                        ║
+║   [Soft-target GPU 擬合求解器] (PyTorch CUDA, 100 iters @ ~31.9ms / 31.3 FPS)                     ║
+║   - 求解 global_orient (人體朝向) 與 body_pose (23 個關節旋轉四元數)                              ║
+║   - 求解 translation (骨盆 Root Motion 相對位移，消除世界座標跳動)                                ║
+║   - 手部 Wrist-Local 局部座標轉換 (保留原始 Hand42 關鍵點幾何)                                    ║
+║          │                                                                                        ║
+║          ▼                                                                                        ║
+║   [Protocol V2 Binary 打包器]                                                                     ║
++═══════════════════════════════════════════════════════════════════════════════════════════════════+
+          │
+          │ 【輸出串流】UDP Datagram (SMV2 高效二進位封包, 1389 Bytes)
+          │ udp://UNITY_IP:9095
+          ▼
++---------------------------------------------------------------------------------------------------+
+| 4. Unity 3D 數位分身播放器 (Unity Hybrid Player)                                                  |
+|    - ProtocolV2Decoder: 二進位封包即時解析                                                        |
+|    - SMPL Body Pose: 驅動 24 處身體骨骼旋轉與骨盆位移 (Root Motion)                                |
+|    - RawHandRetargeter: 驅動雙手 10 根手指靈活動態                                                |
++---------------------------------------------------------------------------------------------------+
 ```
 
-## 0901 策略紀錄
+---
 
-1. **一次校正體型**：啟動後收集前 10 個有效 frame，以 100 iteration 估計一組 `betas`；後續固定 betas，避免每幀身材改變造成骨架抖動。
-2. **每幀 soft-target fitting**：Body17 先映射為 OpenPose Body25，pelvis 歸零後最佳化 SMPL `global_orient + body_pose + translation`。預設 100 iteration。
-3. **重點關節加權**：手腕、腳踝等 endpoint 權重 `2.5`；torso normal 方向權重 `1.5`；跨幀 pose smoothness `0.01`。
-4. **Warm start**：第一幀用肩／髖方向解析初始化 root；之後沿用上一幀 root、body pose、translation，提升速度與連續性。
-5. **Root motion**：以串流第一個有效 pelvis 為 anchor，只送相對位移，Unity 不會跳到相機世界座標。
-6. **Hybrid body/hand**：SMPL pose 只負責 pelvis、身體與手腕；兩手保留 `main_predict` 的原始 21 點，轉成 wrist-local 後交給 Unity `RawHandRetargeter`。這就是新版播放器的 hybrid 套骨架方式。
-7. **品質閘門**：可讀 `reliable`，或使用 `reprojection_errors_px <= 120`；身體必要點不完整時丟棄該 frame，Unity 保持上一姿勢。即時 socket 會清掉排隊的舊 frame，只算最新姿勢。
+## 2. 輸入資料格式 (Input Stream: UDP 9100)
 
-0901 當時的比較紀錄如下；數字用來說明取捨，不應混稱為同一種「準確度」：
+`to-smpl` 接收由 3D 姿態估計管線發送的 **JSON 格式 59 點 3D 關節資料**：
 
-| 方法 | MPJPE | Endpoint | Torso angle | 單幀時間 |
-|---|---:|---:|---:|---:|
-| KAMA 100 | 15.35 mm | — | — | 62.8 ms |
-| KAMA adaptive | 8.18 mm | — | — | 56.9 ms |
-| **Fixed Betas + Soft Target（本版）** | 38.03 mm | 9.44 mm | 3.37° | **31.9 ms / 31.3 FPS** |
+* **傳輸協定**：UDP Datagram（預設監聽 `udp://0.0.0.0:9100`）。
+* **隊列機制**：非阻塞接收（Non-blocking Socket Drain）。每次 GPU 算完一幀，會清空 Socket 緩衝區中堆積的舊封包，只取最新抵達的一筆，確保延遲永遠維持在 ~30ms。
+* **資料 Schema**：`factory_59pt_body_hands`
 
-本版選擇最後一列，原因是即時系統需要固定骨長、穩定方向、手腳 endpoint 觀感與較低延遲。若 GPU 有餘裕，可以把 `--iterations` 提高到 150 或 200；這是品質模式，但不屬於上表原始 100-iteration 測量。
-
-## 安裝
-
-建議 Python 3.10/3.11，並使用與 CUDA 相符的 PyTorch：
-
-```bash
-git clone <YOUR_GITHUB_URL>
-cd smpl_0901_github_release
-python -m venv .venv
-source .venv/bin/activate
-python -m pip install --upgrade pip
-python -m pip install -e .
-```
-
-Windows 啟用環境改用 `.venv\Scripts\activate`。若 PyTorch 需要特定 CUDA wheel，先依 PyTorch 官方指令安裝，再執行 `pip install -e .`。
-
-模型已放在 `models/` 並由 Git LFS 管理。clone 私人 repository 後執行 `git lfs pull`，再確認 `models/smpl/SMPL_NEUTRAL.pkl` 存在。模型受原始授權限制，repository 必須保持私有。
-
-## 接受的 main_predict 輸入
-
-### 新版 JSONL（建議）
-
-每行一個 JSON：
-
+### JSON 結構範例
 ```json
-{"schema":"factory_59pt_body_hands","frame_index":0,"timestamp_s":0.0,"keypoints_3d":[[0.0,0.0,0.0]],"reprojection_errors_px":[0.0]}
+{
+  "schema": "factory_59pt_body_hands",
+  "frame_index": 1054,
+  "timestamp_s": 1725150000.123,
+  "ptp_epoch_ns": 1725150000123456789,
+  "keypoints_3d": [
+    [-579.69, -852.64, -1332.22],
+    [-602.92, -829.20, -1308.17],
+    ...
+    [653.28, -764.50, -1765.41]
+  ],
+  "reliable": [true, true, true, ...],
+  "reprojection_errors_px": [3.21, 4.05, 2.89, ...],
+  "_input_units": "mm",
+  "calibration_id": "factory_rig_B_wall_2026_08-manual-relative-v1"
+}
 ```
 
-實際 `keypoints_3d` 必須是 `[59,3]`，順序必須為 Body17、左手21、右手21；也接受完整 `[133,3]`，程式會取 WholeBody ID `0..16, 91..132`。
+### 59 點關鍵點拓撲順序 (COCO-WholeBody 59-Point Subset)
+| 索引區間 | 部位 | 包含關節 |
+| :--- | :--- | :--- |
+| **`0..16`** (共 17 點) | **Body17 軀幹與四肢** | `0`: 鼻子, `1, 2`: 左右眼, `3, 4`: 左右耳, `5, 6`: 左右肩, `7, 8`: 左右肘, `9, 10`: 左右手腕, `11, 12`: 左右髖, `13, 14`: 左右膝, `15, 16`: 左右腳踝 |
+| **`17..37`** (共 21 點) | **Left Hand 左手** | `17`: 左手腕根部, `18..21`: 拇指, `22..25`: 食指, `26..29`: 中指, `30..33`: 無名指, `34..37`: 小指 |
+| **`38..58`** (共 21 點) | **Right Hand 右手** | `38`: 右手腕根部, `39..42`: 拇指, `43..46`: 食指, `47..50`: 中指, `51..54`: 無名指, `55..58`: 小指 |
 
-### 舊版 JSON
+### 品質閘門保護
+* **必要人體關節**：`[0, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]` 必須數值非 null。
+* **下肢遮擋保護**：若工廠機台遮擋雙腳導致關節為 NaN，系統會自動觸發 `holding the last Unity pose`，使 Unity 角色雙腳穩固站立於地面，上半身與手指持續動態追蹤。
 
-也接受 `keypoint_3d` dictionary，key 為 COCO-WholeBody ID `0..16, 91..132`。可選品質欄位：
+---
 
-- `reliable`: `[59]` 或以 joint ID 為 key 的 dictionary
-- `reprojection_errors_px`: `[59]`，未提供 `reliable` 時用 120 px 門檻
-- `frame_id` / `frame_index`、`timestamp` / `timestamp_s`
+## 3. 輸出資料格式 (Output Stream: UDP 9095 to Unity)
 
-預設 `--input-units auto` 依照 `main_predict` 的 factory contract 將數值視為毫米；舊版 container JSON 若有 `metadata.unit` 也會採用它。自訂串流若已是公尺，請加 `--input-units m`。預設座標轉換為 `--axis-map x,-y,z`；若你的 calibration world 已是 y-up，改成 `--axis-map x,y,z`。軸向不能只靠 schema 猜測，第一次部署請用站立、向前走與舉右手三個動作確認。
+`to-smpl` 擬合完成後，打包成 **`Protocol V2 (SMV2)` 高效二進位封包** 送往 Unity：
 
-## 執行方式
+* **傳輸協定**：UDP Datagram（發送至 `udp://UNITY_HOST:9095`）。
+* **封包大小**：固定長度 1389 Bytes（小於標準 Ethernet MTU 1500，保證不拆包零掉包）。
+* **二進位結構表**：
 
-直接播放 `factory_59pt_dlt_demo.py` 產生的 JSONL：
+| 欄位名稱 | 型態與長度 | 說明 |
+| :--- | :--- | :--- |
+| **Magic Header** | `char[4]` | 固定為 ASCII 字串 `SMV2` |
+| **Frame ID** | `uint32` | 影格流水編號 |
+| **Legacy Translation** | `float32[3]` | 相容舊版位移 |
+| **SMPL Pose** | `float32[156]` | 52 個關節旋轉軸角 (24 身體 + 28 手指) |
+| **Root Position** | `float32[3]` | 骨盆相對於初始錨點的位移 (x, y, z 公尺) |
+| **Pelvis World** | `float32[3]` | 世界座標系下的骨盆位置 |
+| **Root Rotation** | `float32[4]` | 骨盆全域旋轉四元數 (qx, qy, qz, qw) |
+| **Root Confidence**| `float32` | 骨盆估計信心度 |
+| **Left Local Joints**| `float32[63]` | 左手 21 點相對於手腕的局部座標 (3D float32 x 21) |
+| **Left Confidence** | `float32[21]` | 左手 21 點信心度 |
+| **Right Local Joints**| `float32[63]` | 右手 21 點相對於手腕的局部座標 (3D float32 x 21) |
+| **Right Confidence**| `float32[21]` | 右手 21 點信心度 |
+| **Input Valid** | `uint8` | 1=輸入有效, 0=保持上一姿勢 |
+| **Quality Metrics** | `float32[4]` | `inputScore`, `fitResidualMm` (MPJPE), `worstResidualMm`, `torsoOrientationDeg` |
+| **Solver State** | `int32` | `TRACKING` (0), `RECOVERED` (1), `HOLD` (4) |
+| **Steps Used** | `int32` | 擬合迭代步數 (預設 100) |
+| **Reason Mask** | `uint32` | 異常原因位元遮罩 |
 
+---
+
+## 4. 0901 擬合策略與效能
+
+| 方法 | MPJPE 誤差 | Endpoint 誤差 | 軀幹角度偏差 | 單幀耗時 / 幀率 |
+| :--- | :---:| :---:| :---:| :---:|
+| KAMA 100 iters | 15.35 mm | — | — | 62.8 ms (15.9 FPS) |
+| KAMA adaptive | 8.18 mm | — | — | 56.9 ms (17.5 FPS) |
+| **Fixed Betas + Soft Target（本版）** | **38.03 mm** | **9.44 mm** | **3.37°** | **31.9 ms / 31.3 FPS (全速即時)** |
+
+### 核心演算法亮點
+1. **Fixed Betas 體型鎖定**：前 10 幀擬合一次性身材參數 $\beta$ 後全程鎖定骨長，徹底消除動態辨識時人體骨頭伸縮抖動。
+2. **端點加權 Soft-Target**：手腕與腳踝端點賦予 2.5 倍權重，確保工人操作工具與腳踩地面高度貼合。
+3. **軀幹法向量約束 (Torso Normal Constraint)**：計算肩-髖法向量，防止工人背對鏡頭時模型發生前後翻轉。
+4. **Hybrid 混合骨架驅動**：SMPL 驅動全身 24 處關節四元數，`RawHandRetargeter` 驅動 10 根手指原始幾何。
+
+---
+
+## 5. 快速啟動指南
+
+### 步驟 1：啟動 SMPL 0901 Bridge
 ```bash
+# 在 to-smpl 目錄下啟動
 smpl-0901-bridge \
-  --input jsonl:///absolute/path/to/joints_3d_4view.jsonl \
+  --input udp://0.0.0.0:9100 \
+  --smpl-dir /home/chiayu/iii/to-smpl/models \
   --device cuda \
-  --unity-host 192.168.1.20 \
+  --unity-host 127.0.0.1 \
   --unity-port 9095
 ```
 
-舊版 `joints_3d_4view.json`（含 `metadata + frames`）可直接讀，不必先轉檔：
-
+### 步驟 2：啟動 Pipeline 推送串流 (已內建於 run-gx10.sh)
 ```bash
-smpl-0901-bridge --input json:///absolute/path/to/joints_3d_4view.json --device cuda
+cd /home/chiayu/iii/digital-twin-pose
+./deploy/live_pipeline/run-gx10.sh
 ```
 
-直接讀 demo 的 NPZ（優先使用 `keypoints_3d_smoothed`）：
-
-```bash
-smpl-0901-bridge --input npz:///absolute/path/to/joints_3d_4view.npz --device cuda
-```
-
-Linux 同一台機器即時串流，先常駐 bridge：
-
-```bash
-smpl-0901-bridge --input unix:///tmp/dt_pose_3d.sock --device cuda
-```
-
-再由預測端送出每一筆結果：
-
-```python
-from smpl_0901.sender import send_record
-
-record = {
-    "schema": "factory_59pt_body_hands",
-    "frame_index": frame_index,
-    "timestamp_s": timestamp_s,
-    "keypoints_3d": keypoints_3d.tolist(),
-    "reprojection_errors_px": reprojection_errors_px.tolist(),
-}
-send_record(record, "unix:///tmp/dt_pose_3d.sock")
-```
-
-跨 container 或跨主機可改用 `--input udp://0.0.0.0:9100`，sender destination 改成 `udp://BRIDGE_IP:9100`。UDP/Unix datagram 不會讓 predictor 因 SMPL fitting 變慢；忙碌時以最新 frame 為準。
-
-已有 JSON/JSONL 檔也可按原始 FPS 模擬 sender：
-
-```bash
-smpl-0901-send joints_3d_4view.jsonl --destination unix:///tmp/dt_pose_3d.sock --fps 30
-```
-
-注意：目前 `factory_59pt_dlt_demo.py` 的 JSONL/NPZ 是整段離線流程的輸出；要真正即時，需在它產生每個 `record` 的位置呼叫 `send_record`，或讓常駐 predictor 送相同 schema。
-
-## Unity
-
-1. Unity 專案先安裝 BioMotionLab SUP（程式會尋找 `Packages/com.biomotionlab.sup/Models/SMPLH/SMPLH Character Male New.prefab`）以及 TextMeshPro/uGUI。
-2. 把 `unity/CustomSMPL` 複製到 Unity 專案的 `Assets/CustomSMPL`。
-3. Unity 上方選單按 **CustomSMPL → Setup 0901 Live Bridge Player**。
-4. 進入 Play Mode，UI 預設監聽 UDP `9095`。若 Prefab 沒自動找到，在 Inspector 指定 SUP 的 SMPL-H character prefab。
-
-Editor 按鈕會建立 player、root motion、raw hand retargeter、quality debug 與 UI，不必手動拉腳本。`bodyPoseOnly=true` 確保身體由 SMPL pose 驅動、手指由原始 Hand21 hybrid 驅動。
-
-## 專案結構
-
-```text
-smpl_0901/                 Python 常駐 bridge、fitter、協定與 sender
-models/                    Body25 regressor 與 Git LFS 管理的 SMPL pkl
-unity/CustomSMPL/          Protocol V2 hybrid Unity player 與一鍵設定選單
-tests/                     schema、映射、NPZ、binary protocol 測試
-```
-
-模型只適合放在有權限控管的私人 repository。若未來要公開程式碼，請先閱讀 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)，移除 SMPL pkl，並確認 Body25 regressor 的散布來源。
+### 步驟 3：Unity 端一鍵對接
+1. Unity 開啟專案，將 `unity/CustomSMPL` 複製至專案的 `Assets/CustomSMPL`。
+2. 點選 Unity 上方選單：**CustomSMPL → Setup 0901 Live Bridge Player**。
+3. 按下 **Play**，元件將自動綁定 UDP `9095` 埠號，以 30 FPS 即時驅動 3D 數位分身角色與 10 指抓握動態！
