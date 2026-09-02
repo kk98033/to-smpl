@@ -8,23 +8,24 @@ services:
     init: true
     network_mode: host
     gpus: all
+    environment:
+      UNITY_HOST: ${UNITY_HOST:-}
     volumes:
       - type: bind
         source: ${SMPL_MODELS_DIR:-./models}
         target: /models
         read_only: true
+    entrypoint:
+      - /bin/sh
+      - -ec
     command:
-      - --input
-      - udp://0.0.0.0:9100
-      - --smpl-dir
-      - /models
-      - --device
-      - cuda
-      - --unity-host
-      - ${UNITY_HOST:?set UNITY_HOST to the Unity PC or VPN IPv4}
-      - --unity-port
-      - "9095"
-      - --raw-skeleton-host
-      - ${UNITY_HOST:?set UNITY_HOST to the Unity PC or VPN IPv4}
-      - --raw-skeleton-port
-      - "9096"
+      - |
+        : "$${UNITY_HOST:?set UNITY_HOST to the Unity PC, VPN, or local IPv4}"
+        exec smpl-0901-bridge \
+          --input udp://0.0.0.0:9100 \
+          --smpl-dir /models \
+          --device cuda \
+          --unity-host "$${UNITY_HOST}" \
+          --unity-port 9095 \
+          --raw-skeleton-host "$${UNITY_HOST}" \
+          --raw-skeleton-port 9096

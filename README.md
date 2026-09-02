@@ -131,12 +131,20 @@ cd /home/chiayu/iii/to-smpl
 sudo docker compose build
 ```
 
-啟動時指定 Unity PC 的實際 LAN 或 VPN IPv4：
+`UNITY_HOST` 不參與 image 建置；同一份 image 可部署到不同機器。啟動時才指定 Unity PC 的實際 LAN 或 VPN IPv4：
 
 ```bash
 cd /home/chiayu/iii/to-smpl
 sudo UNITY_HOST=192.168.200.1 docker compose up
 ```
+
+若 Unity 與 Bridge 在同一台主機，使用 loopback：
+
+```bash
+sudo UNITY_HOST=127.0.0.1 docker compose up
+```
+
+若未設定 `UNITY_HOST`，容器會在啟動時立即停止並顯示設定提示，不會把目的位址寫死或誤送到其他主機。Unity 接收端須監聽 `0.0.0.0:9095`（SMV2）及 `0.0.0.0:9096`（RSV1）。
 
 停止可按 `Ctrl+C`；SMPL models 預設由 `./models` 掛載到容器 `/models:ro`。若 models 位於別處：
 
