@@ -12,6 +12,8 @@
 
 ![工業數位分身即時姿態與 SMPL 系統架構](docs/digital-twin-system-architecture.svg)
 
+公司部署與維運請見 [Docker 部署手冊](docs/DOCKER_DEPLOYMENT.md)；輸入 JSON、SMV2、RSV1 byte offset 與 CLI 合約請見 [UDP API 文件](docs/UDP_API.md)。
+
 ---
 
 ## 2. 輸入資料格式 (Input Stream: UDP 9100)
@@ -61,7 +63,7 @@
 `to-smpl` 擬合完成後，打包成 **`Protocol V2 (SMV2)` 高效二進位封包** 送往 Unity：
 
 * **傳輸協定**：UDP Datagram（發送至 `udp://UNITY_HOST:9095`）。
-* **封包大小**：固定長度 1389 Bytes（小於標準 Ethernet MTU 1500，保證不拆包零掉包）。
+* **封包大小**：固定長度 1389 Bytes（小於常見 Ethernet MTU 1500，通常不需 IP fragmentation；UDP 本身不保證送達）。
 * **二進位結構表**：
 
 | 欄位名稱 | 型態與長度 | 說明 |
@@ -69,7 +71,7 @@
 | **Magic Header** | `char[4]` | 固定為 ASCII 字串 `SMV2` |
 | **Frame ID** | `uint32` | 影格流水編號 |
 | **Legacy Translation** | `float32[3]` | 相容舊版位移 |
-| **SMPL Pose** | `float32[156]` | 52 個關節旋轉軸角 (24 身體 + 28 手指) |
+| **SMPL Pose** | `float32[156]` | 52×3 軸角 slots；目前 body 使用前 66 floats，雙手另由 Hand21 驅動 |
 | **Root Position** | `float32[3]` | 骨盆相對於初始錨點的位移 (x, y, z 公尺) |
 | **Pelvis World** | `float32[3]` | 世界座標系下的骨盆位置 |
 | **Root Rotation** | `float32[4]` | 骨盆全域旋轉四元數 (qx, qy, qz, qw) |
@@ -124,17 +126,19 @@ RSV1 固定為 little-endian、封包大小 **1032 Bytes**，小於標準 Ethern
 
 Docker image 使用 NVIDIA ARM64 iGPU PyTorch base，SMPL 模型不會複製進 image；執行時以唯讀方式掛載 `models/`。Compose 使用 host network，讓 Pipeline 繼續送到 host UDP 9100，Bridge 也能直接將 9095/9096 送往 Unity。
 
+本節提供快速啟動；公司主機的完整前置需求、模型目錄、GPU 驗證、網路規則、日常維運、更新方式與問題排查請依照 [Docker 部署手冊](docs/DOCKER_DEPLOYMENT.md)。
+
 必要條件：Docker、Docker Compose、NVIDIA Container Toolkit。第一次建置會下載數 GB 的 NGC base image。
 
 ```bash
-cd /home/chiayu/iii/to-smpl
+cd /path/to/to-smpl
 sudo docker compose build
 ```
 
 `UNITY_HOST` 不參與 image 建置；同一份 image 可部署到不同機器。啟動時才指定 Unity PC 的實際 LAN 或 VPN IPv4：
 
 ```bash
-cd /home/chiayu/iii/to-smpl
+cd /path/to/to-smpl
 sudo UNITY_HOST=192.168.200.1 docker compose up
 ```
 
@@ -156,6 +160,8 @@ sudo UNITY_HOST=192.168.200.1 \
 
 > 此 Compose 不設定自動重啟，也不會操作 Pipeline、Fake Sender 或 Dashboard。
 
+Bridge 沒有 HTTP/REST API；三個 UDP 介面的正式合約與 decoder 說明請見 [UDP API 文件](docs/UDP_API.md)。
+
 ---
 
 ## 6. 快速啟動指南
@@ -165,7 +171,7 @@ sudo UNITY_HOST=192.168.200.1 \
 # 在 to-smpl 目錄下啟動
 smpl-0901-bridge \
   --input udp://0.0.0.0:9100 \
-  --smpl-dir /home/chiayu/iii/to-smpl/models \
+  --smpl-dir /path/to/to-smpl/models \
   --device cuda \
   --unity-host 127.0.0.1 \
   --unity-port 9095 \
@@ -175,7 +181,7 @@ smpl-0901-bridge \
 
 ### 步驟 2：啟動 Pipeline 推送串流 (已內建於 run-gx10.sh)
 ```bash
-cd /home/chiayu/iii/digital-twin-pose
+cd /path/to/digital-twin-pose
 ./deploy/live_pipeline/run-gx10.sh
 ```
 
