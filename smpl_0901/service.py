@@ -15,6 +15,7 @@ those belong to dt-pose's upstream transport/inference service.
 from __future__ import annotations
 
 import argparse
+import inspect
 import json
 import socket
 import stat
@@ -25,6 +26,10 @@ from pathlib import Path
 from typing import Iterator
 
 import numpy as np
+
+# Python 3.11+ removed inspect.getargspec, which chumpy 0.70 still imports.
+if not hasattr(inspect, "getargspec"):
+    inspect.getargspec = inspect.getfullargspec  # type: ignore[attr-defined]
 
 # chumpy (used by the bundled SMPL code) still references removed numpy aliases.
 for _name, _value in {
@@ -46,6 +51,11 @@ class JointFrame:
     timestamp: float
     joints: np.ndarray  # [59,3], meters, SMPL axes
     confidence: np.ndarray  # [59]
+    raw_joints: np.ndarray  # [59,3], original input unit and coordinate frame
+    input_unit: str
+    coordinate_frame: str
+    ptp_epoch_ns: int
+    ptp_exact: bool
 
 
 class CalibrationPending(RuntimeError):
@@ -121,6 +131,7 @@ def parse_joint_frame(record: dict, *, units: str, axis_map: str, fallback_id: i
     if schema not in (None, "factory_59pt_body_hands"):
         raise ValueError(f"unsupported schema {schema!r}; expected factory_59pt_body_hands")
     points = _ordered_joints(record)
+    raw_points = points.copy()
     confidence = _confidence(record)
     confidence[~np.isfinite(points).all(axis=1)] = 0.0
     if units == "auto":
@@ -135,7 +146,14 @@ def parse_joint_frame(record: dict, *, units: str, axis_map: str, fallback_id: i
     points = np.stack([points[:, index] * sign for index, sign in mapping], axis=1)
     frame_id = int(record.get("frame_id", record.get("frame_index", record.get("frameId", fallback_id))))
     timestamp = float(record.get("timestamp", record.get("timestamp_s", time.time())))
-    return JointFrame(frame_id, timestamp, points.astype(np.float32), confidence)
+    raw_ptp = record.get("ptp_epoch_ns")
+    ptp_exact = raw_ptp is not None
+    ptp_epoch_ns = int(raw_ptp) if ptp_exact else int(round(timestamp * 1_000_000_000.0))
+    coordinate_frame = str(record.get("coordinate_frame", "unknown"))
+    return JointFrame(
+        frame_id, timestamp, points.astype(np.float32), confidence,
+        raw_points.astype(np.float32), units, coordinate_frame, ptp_epoch_ns, ptp_exact,
+    )
 
 
 def body25_from_factory59(points: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
@@ -288,6 +306,9 @@ class Smpl0901Bridge:
         self.prev_translation = None
         self.pelvis_anchor = None
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        self.raw_destination = (
+            args.raw_skeleton_host or args.unity_host, args.raw_skeleton_port
+        ) if args.raw_skeleton_port else None
 
     def close(self) -> None:
         self.sock.close()
@@ -406,6 +427,23 @@ class Smpl0901Bridge:
     def send(self, packet: bytes) -> None:
         self.sock.sendto(packet, (self.args.unity_host, self.args.unity_port))
 
+    def send_raw_skeleton(self, frame: JointFrame) -> bool:
+        if self.raw_destination is None:
+            return False
+        from .raw_skeleton_udp import pack_raw_skeleton_frame
+
+        packet = pack_raw_skeleton_frame(
+            frame_id=frame.frame_id,
+            ptp_epoch_ns=frame.ptp_epoch_ns,
+            points=frame.raw_joints,
+            confidence=frame.confidence,
+            unit=frame.input_unit,
+            coordinate_frame=frame.coordinate_frame,
+            ptp_exact=frame.ptp_exact,
+        )
+        self.sock.sendto(packet, self.raw_destination)
+        return True
+
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
@@ -420,6 +458,14 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--unity-host", default="127.0.0.1")
     parser.add_argument("--unity-port", type=int, default=9095)
+    parser.add_argument(
+        "--raw-skeleton-host",
+        help="RSV1 destination host; defaults to --unity-host",
+    )
+    parser.add_argument(
+        "--raw-skeleton-port", type=int, default=9096,
+        help="RSV1 raw factory-59 UDP port; use 0 to disable",
+    )
     parser.add_argument("--smpl-dir", type=Path, default=default_smpl_dir())
     parser.add_argument("--device", default="cuda")
     parser.add_argument("--calibration-frames", type=int, default=10)
@@ -446,8 +492,13 @@ def main() -> int:
         return 2
     print(f"[bridge] input={args.input}")
     print(f"[bridge] Unity={args.unity_host}:{args.unity_port}, units={args.input_units}, axis={args.axis_map}")
+    raw_host = args.raw_skeleton_host or args.unity_host
+    print(
+        f"[bridge] Raw skeleton={raw_host}:{args.raw_skeleton_port}"
+        if args.raw_skeleton_port else "[bridge] Raw skeleton=disabled"
+    )
     bridge = Smpl0901Bridge(args)
-    received = sent = dropped = 0
+    received = sent = dropped = raw_sent = raw_dropped = 0
     try:
         for record in iter_json_records(args.input):
             received += 1
@@ -455,11 +506,20 @@ def main() -> int:
                 frame = parse_joint_frame(
                     record, units=args.input_units, axis_map=args.axis_map, fallback_id=received - 1
                 )
+                try:
+                    if bridge.send_raw_skeleton(frame):
+                        raw_sent += 1
+                except (ValueError, OSError) as error:
+                    raw_dropped += 1
+                    print(
+                        f"[bridge] raw skeleton drop frame {frame.frame_id}: {error}",
+                        file=sys.stderr,
+                    )
                 packet, residual = bridge.process(frame)
                 bridge.send(packet)
                 sent += 1
                 if sent == 1 or sent % 30 == 0:
-                    print(f"[bridge] received={received} sent={sent} dropped={dropped} residual={residual:.1f} mm")
+                    print(f"[bridge] received={received} sent={sent} raw_sent={raw_sent} raw_dropped={raw_dropped} dropped={dropped} residual={residual:.1f} mm")
             except CalibrationPending as error:
                 # Expected during the initial fixed-beta calibration window.
                 print(f"[bridge] {error}")

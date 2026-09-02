@@ -1,0 +1,30 @@
+services:
+  bridge:
+    build:
+      context: .
+      args:
+        BASE_IMAGE: ${BASE_IMAGE:-nvcr.io/nvidia/pytorch:26.02-py3-igpu}
+    image: smpl-0901-bridge:gx10
+    init: true
+    network_mode: host
+    gpus: all
+    volumes:
+      - type: bind
+        source: ${SMPL_MODELS_DIR:-./models}
+        target: /models
+        read_only: true
+    command:
+      - --input
+      - udp://0.0.0.0:9100
+      - --smpl-dir
+      - /models
+      - --device
+      - cuda
+      - --unity-host
+      - ${UNITY_HOST:?set UNITY_HOST to the Unity PC or VPN IPv4}
+      - --unity-port
+      - "9095"
+      - --raw-skeleton-host
+      - ${UNITY_HOST:?set UNITY_HOST to the Unity PC or VPN IPv4}
+      - --raw-skeleton-port
+      - "9096"

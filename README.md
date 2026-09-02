@@ -1,6 +1,6 @@
 # SMPL 0901 Live Bridge (to-smpl)
 
-這是一份可獨立放上 GitHub 的「`main_predict` 59 點 3D 關節 → SMPL → Unity」常駐即時轉換服務。它接在 3D 姿態估計管線（`dt-pose`）後面，不負責相機影像 IPC、2D pose 或 DLT；**輸入是已經三角化完成的 `factory_59pt_body_hands` JSON 串流，輸出是 Unity `SMV2` 二進位 UDP 封包**。
+這是一份可獨立放上 GitHub 的「`main_predict` 59 點 3D 關節 → SMPL → Unity」常駐即時轉換服務。它接在 3D 姿態估計管線（`dt-pose`）後面，不負責相機影像 IPC、2D pose 或 DLT；**輸入是已經三角化完成的 `factory_59pt_body_hands` JSON 串流，並平行輸出 Unity `SMV2`（UDP 9095）與原始 59 點 `RSV1`（UDP 9096）二進位封包**。
 
 > 「0901 最佳版」指目前最適合即時串流的生產策略：固定體型（Fixed Betas）、姿勢 soft-target、跨幀 warm start、root motion 與原始 Hand21 混合驅動。在 GPU 上以 31.9 ms / 31.3 FPS 全速運行，兼顧全身骨架穩定度與手部靈活度。
 
@@ -8,72 +8,9 @@
 
 ## 1. 系統全景架構圖 (End-to-End Architecture)
 
-本圖清楚展示從工廠相機端到 Unity 3D 數位分身的全鏈路架構，並標註 **本 Repository (`to-smpl`)** 所處的位置（區塊 3）：
+本圖清楚展示完整資料流；橘色框標示 **本 Repository (`to-smpl`)** 的責任邊界：監聽 UDP 9100、接收 59 點 JSON，將原始骨架以 RSV1 送往 UDP 9096，並執行 SMPL 擬合後將 SMV2 送往 Unity UDP 9095。
 
-```text
-+---------------------------------------------------------------------------------------------------+
-| 1. 影像擷取與發送端 (Fake Sender / Basler DeepStream)                                             |
-|    - 3 視角工業相機 (CAM 41966649, 41966650, 41966651)                                            |
-|    - 硬體 PTP 奈秒時間戳 (IEEE 1588 PtpEpochNs)                                                    |
-+---------------------------------------------------------------------------------------------------+
-       |                                                    |
-       | Unix Domain Socket (SCM_RIGHTS / DMA-BUF 零複製)   | Unix Domain Socket (Meta Struct)
-       | /tmp/ds_ipc_bridge/{cam_id}.sock                   | /tmp/ds_ipc_bridge/{cam_id}.meta.sock
-       ▼                                                    ▼
-+---------------------------------------------------------------------------------------------------+
-| 2. 即時 3D 姿態估計管線 (LivePosePipeline / dt-pose)                                               |
-|                                                                                                   |
-|   [CameraReceiver]                                                                                |
-|          │                                                                                        |
-|          ▼                                                                                        |
-|   [PtpFrameJoiner]  ───► 滑動時間窗配對 (±20ms 容差, 支援循環重播/時間戳倒退重置)                 |
-|          │                                                                                        |
-|          ▼ (JoinedFrameSet: 3 視角同一瞬間影格)                                                    |
-|   [TensorRT 2D Pose 推理] (FP16 / GPU)                                                            |
-|          ├─► YOLOX-M: 人員方框偵測 (含多人員容錯與信心度主目標挑選)                                |
-|          └─► RTMW-x 256x192: 133 點 WholeBody 估計 ──► 擷取 59 點 (Body17 + 雙手 Hand42)         |
-|          │                                                                                        |
-|          ▼                                                                                        |
-|   [3D DLT 幾何三角化] (DLTTriangulator)                                                           |
-|          ├─► cv2.undistortPoints: OpenCV 相機內參去畸變 (intri.yml)                               |
-|          └─► SVD 最小平方法: 結合相機外參矩陣 P = K[R|T] 求解 3D 空間座標 (extri.yml)             |
-|          │                                                                                        |
-|          ▼                                                                                        |
-|   [FanoutSink 雙向分流]                                                                           |
-+---------------------------------------------------------------------------------------------------+
-          │                                                                     │
-          │ UDP Socket (JSON: factory_59pt_body_hands)                          │ IPC / HTTP API
-          │ udp://127.0.0.1:9100                                                │ relative_3d.jsonl + JPEG
-          ▼                                                                     ▼
-+----------------------------------------------------+   +------------------------------------------+
-| 3. SMPL 0901 Bridge (to-smpl) 📍【本 REPO】        |   | 4. 即時 2x2 監看面板 (Dashboard)          |
-|                                                    |   |                                          |
-|   [Non-blocking Drain Socket Receiver]             |   |   - 3 相機即時影像串流 (10 FPS 預載更新) |
-|   (清空排隊舊幀，保持零延遲串流)                   |   |   - 3D Pelvis 根節點人體骨架渲染         |
-|          │                                         |   |   - 攝影機視角鎖定 (零晃動/零拉伸)       |
-|          ▼                                         |   |   - Web 服務埠號: http://127.0.0.1:8088  |
-|   [Fixed Betas 體型校正] (前 10 幀鎖定骨長)        |   +------------------------------------------+
-|          │                                         |
-|          ▼                                         |
-|   [Soft-target GPU 擬合] (PyTorch CUDA, 100 iters) |
-|   - 求解 global_orient, body_pose (24 關節四元數)  |
-|   - 求解 translation (骨盆 Root Motion)            |
-|   - 手部 Wrist-Local 局部座標轉換                  |
-|          │                                         |
-|          ▼                                         |
-|   [Protocol V2 Binary 打包]                        |
-+----------------------------------------------------+
-          │
-          │ UDP Socket (SMV2 二進位高效封包, 1389 Bytes)
-          │ udp://127.0.0.1:9095
-          ▼
-+---------------------------------------------------------------------------------------------------+
-| 5. Unity 3D 數位分身播放器 (Unity Hybrid Player)                                                  |
-|    - ProtocolV2Decoder: 二進位封包即時解析                                                        |
-|    - SMPL Body Pose: 驅動 24 處身體骨骼旋轉與骨盆位移 (Root Motion)                                |
-|    - RawHandRetargeter: 驅動雙手 10 根手指靈活動態                                                |
-+---------------------------------------------------------------------------------------------------+
-```
+![工業數位分身即時姿態與 SMPL 系統架構](docs/digital-twin-system-architecture.svg)
 
 ---
 
@@ -101,7 +38,8 @@
   "reliable": [true, true, true, ...],
   "reprojection_errors_px": [3.21, 4.05, 2.89, ...],
   "_input_units": "mm",
-  "calibration_id": "factory_rig_B_wall_2026_08-manual-relative-v1"
+  "calibration_id": "factory_rig_B_wall_2026_08-manual-relative-v1",
+  "coordinate_frame": "factory_rig_B_world"
 }
 ```
 
@@ -146,6 +84,24 @@
 | **Steps Used** | `int32` | 擬合迭代步數 (預設 100) |
 | **Reason Mask** | `uint32` | 異常原因位元遮罩 |
 
+### Raw Skeleton V1（RSV1，UDP 9096）
+
+Bridge 一收到並成功解析 UDP 9100 JSON，就會在任何單位轉換、軸向映射、品質閘門或 SMPL 擬合之前，將原始 59 點平行送至 `udp://RAW_SKELETON_HOST:9096`。因此即使該幀之後被 SMPL 品質閘門拒絕，RSV1 仍可供獨立接收器記錄或視覺化。
+
+| 欄位名稱 | 型態與長度 | 說明 |
+| :--- | :--- | :--- |
+| **Magic Header** | `char[4]` | 固定為 ASCII `RSV1` |
+| **Version** | `uint16` | 協定版本，目前為 `1` |
+| **Flags** | `uint16` | bit 0：`ptp_epoch_ns` 為來源提供的精確 PTP；否則為時間戳回退值 |
+| **Frame ID** | `uint32` | 對應輸入 JSON 的 `frame_index` |
+| **PTP Epoch** | `uint64` | 奈秒級 epoch timestamp |
+| **Unit** | `uint8` + 3 bytes padding | `0=unknown`、`1=m`、`2=mm` |
+| **Coordinate Frame** | `char[64]` | UTF-8、NUL padding，來源座標系名稱 |
+| **Raw Keypoints** | `float32[59][3]` | 輸入的原始 59×3 座標；無效關節可為 `NaN` |
+| **Confidence** | `float32[59]` | 每點信心度 `[0,1]`；目前由 `reliable` 映射為 `1.0/0.0` |
+
+RSV1 固定為 little-endian、封包大小 **1032 Bytes**，小於標準 Ethernet MTU。預設目標主機沿用 `--unity-host`，`--raw-skeleton-port 0` 可停用；此輸出不取代也不改變既有 UDP 9095 SMV2。
+
 ---
 
 ## 4. 0901 擬合策略與效能
@@ -164,7 +120,37 @@
 
 ---
 
-## 5. 快速啟動指南
+## 5. Docker（NVIDIA GB10 / ARM64）
+
+Docker image 使用 NVIDIA ARM64 iGPU PyTorch base，SMPL 模型不會複製進 image；執行時以唯讀方式掛載 `models/`。Compose 使用 host network，讓 Pipeline 繼續送到 host UDP 9100，Bridge 也能直接將 9095/9096 送往 Unity。
+
+必要條件：Docker、Docker Compose、NVIDIA Container Toolkit。第一次建置會下載數 GB 的 NGC base image。
+
+```bash
+cd /home/chiayu/iii/to-smpl
+sudo docker compose build
+```
+
+啟動時指定 Unity PC 的實際 LAN 或 VPN IPv4：
+
+```bash
+cd /home/chiayu/iii/to-smpl
+sudo UNITY_HOST=192.168.200.1 docker compose up
+```
+
+停止可按 `Ctrl+C`；SMPL models 預設由 `./models` 掛載到容器 `/models:ro`。若 models 位於別處：
+
+```bash
+sudo UNITY_HOST=192.168.200.1 \
+  SMPL_MODELS_DIR=/absolute/path/to/models \
+  docker compose up
+```
+
+> 此 Compose 不設定自動重啟，也不會操作 Pipeline、Fake Sender 或 Dashboard。
+
+---
+
+## 6. 快速啟動指南
 
 ### 步驟 1：啟動 SMPL 0901 Bridge
 ```bash
@@ -174,7 +160,9 @@ smpl-0901-bridge \
   --smpl-dir /home/chiayu/iii/to-smpl/models \
   --device cuda \
   --unity-host 127.0.0.1 \
-  --unity-port 9095
+  --unity-port 9095 \
+  --raw-skeleton-host 127.0.0.1 \
+  --raw-skeleton-port 9096
 ```
 
 ### 步驟 2：啟動 Pipeline 推送串流 (已內建於 run-gx10.sh)
@@ -186,4 +174,6 @@ cd /home/chiayu/iii/digital-twin-pose
 ### 步驟 3：Unity 端一鍵對接
 1. Unity 開啟專案，將 `unity/CustomSMPL` 複製至專案的 `Assets/CustomSMPL`。
 2. 點選 Unity 上方選單：**CustomSMPL → Setup 0901 Live Bridge Player**。
-3. 按下 **Play**，元件將自動綁定 UDP `9095` 埠號，以 30 FPS 即時驅動 3D 數位分身角色與 10 指抓握動態！
+3. 按下 **Play**，元件將自動綁定 UDP `9095` 埠號，以 30 FPS 即時驅動 3D 數位分身角色與 10 指抓握動態。
+
+既有 Unity 元件只解析 9095 的 SMV2；若要顯示原始骨架，需另建一個監聽 UDP 9096 並解析 RSV1 的 receiver。兩路資料互相獨立。

@@ -10,11 +10,17 @@ from smpl_0901.protocol_v2_udp import (
     pack_protocol_v2_frame,
     unpack_protocol_v2_frame,
 )
+from smpl_0901.raw_skeleton_udp import (
+    PACKET_SIZE as RAW_PACKET_SIZE,
+    pack_raw_skeleton_frame,
+    unpack_raw_skeleton_frame,
+)
 from smpl_0901.service import (
     FACTORY_IDS,
     body25_from_factory59,
     iter_json_records,
     parse_joint_frame,
+    Smpl0901Bridge,
 )
 
 
@@ -26,6 +32,9 @@ class InputContractTests(unittest.TestCase):
                 "schema": "factory_59pt_body_hands",
                 "frame_index": 7,
                 "timestamp_s": 1.25,
+                "ptp_epoch_ns": 1_250_000_123,
+                "coordinate_frame": "factory-rig-b-calibration-world",
+                "_input_units": "m",
                 "keypoints_3d": points.tolist(),
                 "reprojection_errors_px": [0.0] * 58 + [121.0],
             },
@@ -36,6 +45,11 @@ class InputContractTests(unittest.TestCase):
         np.testing.assert_allclose(frame.joints, points)
         self.assertEqual(frame.frame_id, 7)
         self.assertEqual(frame.confidence[-1], 0.0)
+        np.testing.assert_allclose(frame.raw_joints, points)
+        self.assertEqual(frame.input_unit, "m")
+        self.assertEqual(frame.ptp_epoch_ns, 1_250_000_123)
+        self.assertTrue(frame.ptp_exact)
+        self.assertEqual(frame.coordinate_frame, "factory-rig-b-calibration-world")
 
     def test_old_wholebody_mapping(self):
         mapping = {str(i): [float(i), 0.0, 1.0] for i in FACTORY_IDS}
@@ -121,6 +135,72 @@ class ProtocolTests(unittest.TestCase):
         decoded = unpack_protocol_v2_frame(packet)
         self.assertEqual(decoded["frameId"], 42)
         self.assertEqual(decoded["protocolVersion"], 2)
+
+    def test_raw_skeleton_v1_round_trip_stays_below_mtu(self):
+        points = np.arange(59 * 3, dtype=np.float32).reshape(59, 3)
+        points[-1] = np.nan
+        confidence = np.ones(59, dtype=np.float32)
+        confidence[-1] = 0.0
+        packet = pack_raw_skeleton_frame(
+            frame_id=77,
+            ptp_epoch_ns=1_725_150_000_123_456_789,
+            points=points,
+            confidence=confidence,
+            unit="mm",
+            coordinate_frame="factory-rig-b-calibration-world",
+        )
+
+        self.assertEqual(len(packet), RAW_PACKET_SIZE)
+        self.assertEqual(RAW_PACKET_SIZE, 1032)
+        self.assertLess(RAW_PACKET_SIZE, 1500)
+        decoded = unpack_raw_skeleton_frame(packet)
+        self.assertEqual(decoded["frameId"], 77)
+        self.assertEqual(decoded["unit"], "mm")
+        self.assertEqual(decoded["coordinateFrame"], "factory-rig-b-calibration-world")
+        np.testing.assert_allclose(decoded["points"][:-1], points[:-1])
+        self.assertTrue(np.isnan(decoded["points"][-1]).all())
+        np.testing.assert_allclose(decoded["confidence"], confidence)
+
+
+    def test_bridge_sends_raw_skeleton_to_independent_destination(self):
+        class FakeSocket:
+            def __init__(self):
+                self.calls = []
+
+            def sendto(self, packet, destination):
+                self.calls.append((packet, destination))
+
+        points = np.zeros((59, 3), dtype=np.float32)
+        frame = parse_joint_frame(
+            {
+                "frame_index": 9,
+                "ptp_epoch_ns": 123456789,
+                "_input_units": "mm",
+                "coordinate_frame": "factory-world",
+                "keypoints_3d": points.tolist(),
+                "reliable": [True] * 59,
+            },
+            units="auto", axis_map="x,-y,z", fallback_id=0,
+        )
+        bridge = Smpl0901Bridge.__new__(Smpl0901Bridge)
+        bridge.sock = FakeSocket()
+        bridge.raw_destination = ("127.0.0.1", 9096)
+
+        self.assertTrue(bridge.send_raw_skeleton(frame))
+
+        self.assertEqual(bridge.sock.calls[0][1], ("127.0.0.1", 9096))
+        decoded = unpack_raw_skeleton_frame(bridge.sock.calls[0][0])
+        self.assertEqual(decoded["frameId"], 9)
+        self.assertEqual(decoded["coordinateFrame"], "factory-world")
+
+    def test_raw_skeleton_coordinate_frame_has_fixed_utf8_limit(self):
+        with self.assertRaisesRegex(ValueError, "coordinate frame"):
+            pack_raw_skeleton_frame(
+                frame_id=1, ptp_epoch_ns=1,
+                points=np.zeros((59, 3), dtype=np.float32),
+                confidence=np.ones(59, dtype=np.float32),
+                unit="m", coordinate_frame="x" * 64,
+            )
 
 
 if __name__ == "__main__":
