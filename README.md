@@ -124,7 +124,7 @@ RSV1 固定為 little-endian、封包大小 **1032 Bytes**，小於標準 Ethern
 
 ## 5. Docker（NVIDIA GB10 / ARM64）
 
-Docker image 使用 NVIDIA ARM64 iGPU PyTorch base，SMPL 模型不會複製進 image；執行時以唯讀方式掛載 `models/`。Compose 使用 host network，讓 Pipeline 繼續送到 host UDP 9100，Bridge 也能直接將 9095/9096 送往 Unity。
+Docker image 使用支援 GB10／Blackwell `sm_12x` 的 NVIDIA PyTorch base，SMPL 模型不會複製進 image；執行時以唯讀方式掛載 `models/`。Compose 使用 host network，讓 Pipeline 繼續送到 host UDP 9100，Bridge 也能直接將 9095/9096 送往 Unity。
 
 本節提供快速啟動；公司主機的完整前置需求、模型目錄、GPU 驗證、網路規則、日常維運、更新方式與問題排查請依照 [Docker 部署手冊](docs/DOCKER_DEPLOYMENT.md)。
 

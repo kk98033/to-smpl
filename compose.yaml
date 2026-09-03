@@ -3,7 +3,7 @@ services:
     build:
       context: .
       args:
-        BASE_IMAGE: ${BASE_IMAGE:-nvcr.io/nvidia/pytorch:26.02-py3-igpu}
+        BASE_IMAGE: ${BASE_IMAGE:-nvcr.io/nvidia/pytorch:26.02-py3}
     image: smpl-0901-bridge:gx10
     init: true
     network_mode: host

@@ -20,7 +20,7 @@ Compose 使用 host network，因此：
 
 ## 2. 支援平台與必要條件
 
-目前預設 base image 是 <code>nvcr.io/nvidia/pytorch:26.02-py3-igpu</code>，部署目標為 NVIDIA GB10 / ARM64 Linux。
+目前預設 base image 是 <code>nvcr.io/nvidia/pytorch:26.02-py3</code>，部署目標為 NVIDIA GB10 / ARM64 Linux。請勿改回僅含 <code>sm_87</code> 的 wheel；Docker build 會檢查 PyTorch 編譯架構中至少包含一個 <code>sm_12x</code> target，否則立即失敗。
 
 必要條件：
 
@@ -105,6 +105,14 @@ sudo BASE_IMAGE=nvcr.io/nvidia/pytorch:<tag> docker compose build
 ~~~bash
 sudo docker image inspect smpl-0901-bridge:gx10
 ~~~
+
+第一次由舊的 <code>26.02-py3-igpu</code> 修正時，建議清除該次 build cache 影響：
+
+~~~bash
+sudo docker compose build --pull --no-cache
+~~~
+
+這不會修改主機的全域環境變數；它只會更新此 Compose 使用的 local Docker image 與 build cache。之後程式未改動時可回到一般的 <code>sudo docker compose build</code>。
 
 ## 6. 啟動時指定 Unity IP
 
