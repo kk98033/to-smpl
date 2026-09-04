@@ -130,10 +130,14 @@ Docker image 使用支援 GB10／Blackwell `sm_12x` 的 NVIDIA PyTorch base，SM
 
 必要條件：Docker、Docker Compose、NVIDIA Container Toolkit。第一次建置會下載數 GB 的 NGC base image。
 
+執行前置檢查與映像檔建置腳本：
+
 ```bash
 cd /path/to/to-smpl
-sudo docker compose build
+./prepare-gx10.sh
 ```
+
+（該腳本會檢查必要 SMPL 模型是否存在並執行 `docker compose build`）
 
 `UNITY_HOST` 不參與 image 建置；同一份 image 可部署到不同機器。啟動時才指定 Unity PC 的實際 LAN 或 VPN IPv4：
 

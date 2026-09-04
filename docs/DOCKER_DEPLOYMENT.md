@@ -82,7 +82,15 @@ test -r models/smpl/SMPL_NEUTRAL.pkl
 
 ## 5. 建置
 
-<code>UNITY_HOST</code> 不參與 build，同一份 image 可在啟動時送往不同 Unity 電腦：
+<code>UNITY_HOST</code> 不參與 build，同一份 image 可在啟動時送往不同 Unity 電腦。
+
+可以直接執行前置準備腳本（自動檢查模型與建置映像檔）：
+
+~~~bash
+./prepare-gx10.sh
+~~~
+
+或手動執行 Docker Compose 建置：
 
 ~~~bash
 sudo docker compose build
