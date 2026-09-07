@@ -1,4 +1,6 @@
 import json
+import re
+import struct
 import tempfile
 import unittest
 from pathlib import Path
@@ -242,6 +244,38 @@ class ProtocolTests(unittest.TestCase):
                 confidence=np.ones(59, dtype=np.float32),
                 unit="m", coordinate_frame="x" * 64,
             )
+
+    def test_unity_0901_codec_matches_server_packet_size(self):
+        codec = (
+            Path(__file__).parents[1]
+            / "unity"
+            / "SMPL0901Player"
+            / "Runtime"
+            / "Smpl0901BinaryCodec.cs"
+        ).read_text(encoding="utf-8")
+        match = re.search(r"PacketSize\s*=\s*(\d+)", codec)
+        self.assertIsNotNone(match)
+        self.assertEqual(int(match.group(1)), PACKET_SIZE)
+        self.assertIn('header != "SMV2"', codec)
+
+    def test_unity_rsv1_codec_matches_raw_sender_contract(self):
+        expected_size = struct.calcsize("<4sHHIQB3x64s177f59f")
+        self.assertEqual(expected_size, 1032)
+        codec = (
+            Path(__file__).parents[1]
+            / "unity"
+            / "SMPL0901Player"
+            / "Runtime"
+            / "Rsv1RawSkeletonCodec.cs"
+        ).read_text(encoding="utf-8")
+        size = re.search(r"PacketSize\s*=\s*(\d+)", codec)
+        count = re.search(r"JointCount\s*=\s*(\d+)", codec)
+        self.assertIsNotNone(size)
+        self.assertIsNotNone(count)
+        self.assertEqual(int(size.group(1)), expected_size)
+        self.assertEqual(int(count.group(1)), 59)
+        self.assertIn('magic != "RSV1"', codec)
+        self.assertIn("reader.ReadUInt64()", codec)
 
 
 if __name__ == "__main__":

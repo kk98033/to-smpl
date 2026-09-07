@@ -188,8 +188,18 @@ cd /path/to/digital-twin-pose
 ```
 
 ### 步驟 3：Unity 端一鍵對接
-1. Unity 開啟專案，將 `unity/CustomSMPL` 複製至專案的 `Assets/CustomSMPL`。
-2. 點選 Unity 上方選單：**CustomSMPL → Setup 0901 Live Bridge Player**。
-3. 按下 **Play**，元件將自動綁定 UDP `9095` 埠號，以 30 FPS 即時驅動 3D 數位分身角色與 10 指抓握動態。
+1. 將 `unity/SMPL0901Player` 複製到 Unity 專案的 `Assets/SMPL0901Player`；舊版 `CustomSMPL` 不需修改。
+2. 點選 Unity 上方選單：**SMPL 0901 → Create Live Player in Scene**。
+3. 按下 **Play**。播放器預設接受 Server IP `192.168.1.250`，同時監聽 UDP `9095`（SMV2）與 `9096`（RSV1）。
 
-既有 Unity 元件只解析 9095 的 SMV2；若要顯示原始骨架，需另建一個監聽 UDP 9096 並解析 RSV1 的 receiver。兩路資料互相獨立。
+播放器採 Hybrid 驅動：SMPL 負責身體與手腕，原始 Hand21 負責手指。Runtime UI 可修改 Server IP 與兩個 Port，並分別開關 SMPL Mesh、SMPL 反推骨架和原始 59 點骨架。完整操作方式見 [`unity/SMPL0901Player/README.md`](unity/SMPL0901Player/README.md)。
+
+## 專案結構
+
+```text
+smpl_0901/                 Python 常駐 bridge、fitter 與二進位協定
+models/                    Body25 regressor 與 SMPL 模型
+unity/SMPL0901Player/      獨立的 SMV2/RSV1 Hybrid Unity 播放器
+unity/CustomSMPL/          舊版播放器參考副本
+tests/                     輸入 schema 與 Python/Unity protocol contract 測試
+```
