@@ -1,6 +1,6 @@
 # SMPL 0901 Live Bridge (to-smpl)
 
-這是一份可獨立放上 GitHub 的「`main_predict` 59 點 3D 關節 → SMPL → Unity」常駐即時轉換服務。它接在 3D 姿態估計管線（`dt-pose`）後面，不負責相機影像 IPC、2D pose 或 DLT；**輸入是已經三角化完成的 `factory_59pt_body_hands` JSON 串流，並平行輸出 Unity `SMV2`（UDP 9095）與原始 59 點 `RSV1`（UDP 9096）二進位封包**。
+這是一份可獨立放上 GitHub 的「`main_predict` 59 點 3D 關節 → SMPL → Unity」常駐即時轉換服務。它接在 3D 姿態估計管線（`dt-pose`）後面，不負責相機影像 IPC、2D pose 或 DLT；**輸入是已完成 3D 預測的 JSON 串流，原生支援新版 `dt-pose.pose3d/v1` 並向後相容 `factory_59pt_body_hands`；Bridge 平行輸出 Unity `SMV2`（UDP 9095）與原始 59 點 `RSV1`（UDP 9096）二進位封包**。
 
 > 「0901 最佳版」指目前最適合即時串流的生產策略：固定體型（Fixed Betas）、姿勢 soft-target、跨幀 warm start、root motion 與原始 Hand21 混合驅動。在 GPU 上以 31.9 ms / 31.3 FPS 全速運行，兼顧全身骨架穩定度與手部靈活度。
 
@@ -22,26 +22,24 @@
 
 * **傳輸協定**：UDP Datagram（預設監聽 `udp://0.0.0.0:9100`）。
 * **隊列機制**：非阻塞接收（Non-blocking Socket Drain）。每次 GPU 算完一幀，會清空 Socket 緩衝區中堆積的舊封包，只取最新抵達的一筆，確保延遲永遠維持在 ~30ms。
-* **資料 Schema**：`factory_59pt_body_hands`
+* **資料 Schema**：`dt-pose.pose3d/v1`（新版）或 `factory_59pt_body_hands`（舊版相容）
 
 ### JSON 結構範例
 ```json
 {
-  "schema": "factory_59pt_body_hands",
-  "frame_index": 1054,
-  "timestamp_s": 1725150000.123,
-  "ptp_epoch_ns": 1725150000123456789,
-  "keypoints_3d": [
-    [-579.69, -852.64, -1332.22],
-    [-602.92, -829.20, -1308.17],
+  "schema": "dt-pose.pose3d/v1",
+  "source": "rig_b",
+  "frame": 1054,
+  "timestamp_ns": 1725150000123456789,
+  "units": "m",
+  "layout": "factory59",
+  "joints": [
+    [-0.580, -0.853, -1.332],
+    [-0.603, -0.829, -1.308],
     ...
-    [653.28, -764.50, -1765.41]
+    [0.653, -0.765, -1.765]
   ],
-  "reliable": [true, true, true, ...],
-  "reprojection_errors_px": [3.21, 4.05, 2.89, ...],
-  "_input_units": "mm",
-  "calibration_id": "factory_rig_B_wall_2026_08-manual-relative-v1",
-  "coordinate_frame": "factory_rig_B_world"
+  "single_person": true
 }
 ```
 
@@ -54,7 +52,7 @@
 
 ### 品質閘門保護
 * **必要人體關節**：`[0, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]` 必須數值非 null。
-* **下肢遮擋保護**：若工廠機台遮擋雙腳導致關節為 NaN，系統會自動觸發 `holding the last Unity pose`，使 Unity 角色雙腳穩固站立於地面，上半身與手指持續動態追蹤。
+* **下肢遮擋保護**：若工廠機台遮擋雙腳導致關節為 `null`（解析後為 NaN），系統會自動觸發 `holding the last Unity pose`，使 Unity 角色雙腳穩固站立於地面，上半身與手指持續動態追蹤。
 
 ---
 

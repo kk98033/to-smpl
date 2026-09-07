@@ -11,6 +11,8 @@ dt-pose Pipeline
                            └─ UDP 9096 / RSV1 ─> Unity or recorder
 ~~~
 
+UDP 9100 同時接受 `dt-pose.pose3d/v1`（`joints`, `frame`, `timestamp_ns`, `units=m`, `layout=factory59`）與舊版 `factory_59pt_body_hands`。因此更新 Pipeline 後不需改 Compose command；Bridge 會依每包 schema 解析，auto 單位不會把新版米制資料再縮小 1000 倍。
+
 Compose 使用 host network，因此：
 
 - Bridge 直接 bind Linux host 的 UDP 9100；

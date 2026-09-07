@@ -45,13 +45,11 @@ Pipeline 是整個系統的幾何與神經網路運算核心：
 2. **2D 人體與手部姿態估計 (TensorRT FP16)**：
    * **第一階段（人體偵測）**：`YOLOX-M` 進行即時目標方框偵測。若背景機具反光產生多個候選框，系統自動挑選最高信心度的主目標（Primary Person），避免誤判中斷。
    * **第二階段（關鍵點估計）**：`RTMW-x 256x192` 進行 Top-down 全身關鍵點回歸，產出 COCO-WholeBody 133 點，並擷取其中的 **59 點精簡子集（Body17 + 左手21 + 右手21）**。
-3. **光學去畸變與 3D DLT 三角化 (`DLTTriangulator`)**：
-   * 根據各相機內參 $K$ 與畸變參數 $D$（`intri.yml`），呼叫 `cv2.undistortPoints` 去除廣角鏡頭桶狀/枕狀畸變。
-   * 結合外參旋轉平移矩陣 $[R \mid T]$（`extri.yml`），建立投影矩陣 $P = K [R \mid T]$。
-   * 透過 SVD 奇異值分解最小平方法（Direct Linear Transform），求出 59 個關節的世界座標 $(X, Y, Z)$ 與重投影誤差。
-4. **雙向分流 (`FanoutSink`)**：
-   * **分流 A**：透過 UDP `9100` 即時傳送 JSON 給 SMPL Bridge。
-   * **分流 B**：輸出 `relative_3d.jsonl` 與 JPEG 預覽給 Dashboard 前端。
+3. **Shared-memory ring 邊界**：receiver 容器完成 PTP join 後，以固定 8-slot ring 寫入 `/dev/shm/dt-pose-ring`；host 永遠讀最新完整 frame set，落後時跳幀而不累積延遲。
+4. **3D DLT + rolling MV-SSM v26**：
+   * 先依 `intri.yml`/`extri.yml` 去畸變並建立 `P = K[R|T]`，DLT 結果保留作幾何診斷。
+   * 預設累積 16 幀 2D 序列，經雙向 MV-SSM backbone、C3R repair 與 M5 hold 輸出最新 59 點；重播 PTP 倒退時重置窗口。
+5. **UDP handoff**：以 `dt-pose.pose3d/v1` 將米制 `factory59` 關節與原始 PTP timestamp 傳至 UDP `9100`；缺失關節是 JSON `null`。
 
 ---
 
@@ -62,21 +60,20 @@ SMPL Bridge 是將 59 點 3D 骨架轉換為工業數位分身（SMPL Mesh）與
 #### 1. 輸入串流規格 (Input: UDP 9100)
 * **通訊方式**：UDP Datagram Socket（`udp://0.0.0.0:9100`）。
 * **即時隊列機制**：非阻塞接收（Non-blocking Drain），處理新幀前自動排空累積的舊封包，**永遠只處理最新到達的一筆，延遲穩定維持在 ~30ms**。
-* **輸入 JSON 格式 (`factory_59pt_body_hands`)**：
+* **輸入 JSON 格式**：新版 `dt-pose.pose3d/v1`；舊版 `factory_59pt_body_hands` 仍相容：
   ```json
   {
-    "schema": "factory_59pt_body_hands",
-    "frame_index": 1054,
-    "timestamp_s": 1725150000.123,
-    "ptp_epoch_ns": 1725150000123456789,
-    "keypoints_3d": [
-      [-579.69, -852.64, -1332.22],
-      ... (共 59 點 [x, y, z] 座標)
+    "schema": "dt-pose.pose3d/v1",
+    "source": "rig_b",
+    "frame": 1054,
+    "timestamp_ns": 1725150000123456789,
+    "units": "m",
+    "layout": "factory59",
+    "joints": [
+      [-0.580, -0.853, -1.332],
+      ... (共 59 點；缺失點為 null)
     ],
-    "reliable": [true, true, ...],
-    "reprojection_errors_px": [3.21, 4.05, ...],
-    "_input_units": "mm",
-    "coordinate_frame": "factory_rig_B_world"
+    "single_person": true
   }
   ```
 

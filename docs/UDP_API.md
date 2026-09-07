@@ -19,43 +19,48 @@ UDP 不提供連線、ack、重送、順序或送達保證。每個 datagram 必
 - Bridge 單包接收上限為 1 MiB。
 - Bridge 擬合期間若累積多包，會丟棄排隊舊包，只處理最新完整 datagram。
 - UDP 沒有回應封包；成功與否從 Bridge log 與輸出 frame 判斷。
-- <code>schema</code> 可省略；若提供，必須是 <code>factory_59pt_body_hands</code>。
+- <code>schema</code> 可為新版 <code>dt-pose.pose3d/v1</code> 或舊版 <code>factory_59pt_body_hands</code>；省略時依舊版欄位解析。
 
 ### 建議 JSON
 
 ~~~json
 {
-  "schema": "factory_59pt_body_hands",
-  "frame_index": 1054,
-  "timestamp_s": 1725150000.123,
-  "ptp_epoch_ns": 1725150000123456789,
-  "_input_units": "mm",
-  "coordinate_frame": "factory_rig_B_world",
-  "keypoints_3d": [[-579.69, -852.64, -1332.22]],
-  "reliable": [true],
-  "reprojection_errors_px": [3.21]
+  "schema": "dt-pose.pose3d/v1",
+  "source": "rig_b",
+  "frame": 1054,
+  "timestamp_ns": 1725150000123456789,
+  "units": "m",
+  "layout": "factory59",
+  "joints": [[-0.580, -0.853, -1.332]],
+  "single_person": true
 }
 ~~~
 
-範例為了易讀只畫出一點；實際 <code>keypoints_3d</code> 必須有 59 筆，<code>reliable</code> 若提供也必須有 59 筆。
+範例為了易讀只畫出一點；實際 <code>joints</code> 必須有 59 筆。缺失關節使用 JSON <code>null</code>，不得傳送非標準 <code>NaN</code> token。
 
 ### 欄位
 
 | 欄位 | 型態 | 必要 | 說明 |
 | --- | --- | --- | --- |
-| <code>schema</code> | string | 否 | 省略或固定為 <code>factory_59pt_body_hands</code> |
+| <code>schema</code> | string | 否 | 新版 <code>dt-pose.pose3d/v1</code>；亦接受舊版 <code>factory_59pt_body_hands</code> 或省略 |
+| <code>frame</code> | integer | 新版建議 | v1 frame ID；舊版別名為 <code>frame_index</code>、<code>frame_id</code>、<code>frameId</code> |
+| <code>timestamp_ns</code> | integer | 新版建議 | v1 PTP/epoch 奈秒；舊版別名為 <code>ptp_epoch_ns</code> |
+| <code>units</code> | string | 新版必要 | <code>m</code> 或 <code>mm</code>；舊版使用 <code>_input_units</code>，皆無時 auto 預設 mm |
+| <code>layout</code> | string | v1 必要 | <code>dt-pose.pose3d/v1</code> 固定為 <code>factory59</code> |
+| <code>joints</code> | number/null [59][3] | v1 必要 | Factory59 座標；每個缺失 joint 可為 <code>null</code> |
+| <code>single_person</code> | boolean | 否 | 三視角是否都只偵測到一人；Bridge 保留相容解析，品質政策仍由部署端決定 |
 | <code>frame_index</code> | integer | 建議 | uint32 frame ID；亦接受 <code>frame_id</code>、<code>frameId</code> |
 | <code>timestamp_s</code> | number | 否 | Unix epoch 秒；亦接受 <code>timestamp</code>，省略時使用接收時間 |
 | <code>ptp_epoch_ns</code> | integer | 否 | Unix epoch 奈秒；省略時由 timestamp 換算，RSV1 exact flag 為 0 |
 | <code>_input_units</code> | string | 建議 | <code>mm</code> 或 <code>m</code>；auto 模式省略時預設 mm |
 | <code>coordinate_frame</code> | string | 建議 | 座標系名稱；RSV1 UTF-8 編碼後必須少於 64 bytes |
-| <code>keypoints_3d</code> | number/null [59][3] | 是 | Factory59 點；亦接受 [133][3] 並擷取 WholeBody 指定點 |
+| <code>keypoints_3d</code> | number/null [59][3] | 舊版必要 | Factory59 點；亦接受 [133][3] 並擷取 WholeBody 指定點 |
 | <code>points_3d</code> | number/null [59][3] | 替代 | <code>keypoints_3d</code> 的別名 |
 | <code>keypoint_3d</code> | object | 替代 | 以 WholeBody ID 為 key：0..16、91..132 |
 | <code>reliable</code> | bool/number [59] 或 object | 否 | 陣列為 Factory59 順序；object 以 WholeBody ID 為 key；轉成 [0,1] confidence |
 | <code>reprojection_errors_px</code> | number [59] | 否 | reliable 省略時，有限且 ≤120 px 視為可靠 |
 
-非有限座標會把該點 confidence 設為 0。進入 SMPL 前預設執行 mm → m 與 <code>x,-y,z</code> 軸映射；RSV1 保留映射前的原始數值和單位。
+缺失或非有限座標會把該點 confidence 設為 0。auto 模式依 payload 宣告單位；舊格式未宣告時才執行預設 mm → m 與 <code>x,-y,z</code> 軸映射；RSV1 保留映射前的原始數值和單位。
 
 ### 59 點順序
 
