@@ -51,6 +51,47 @@ class InputContractTests(unittest.TestCase):
         self.assertTrue(frame.ptp_exact)
         self.assertEqual(frame.coordinate_frame, "factory-rig-b-calibration-world")
 
+    def test_dt_pose_v1_udp_payload_uses_declared_metres_and_ptp(self):
+        points = (np.arange(59 * 3, dtype=np.float32).reshape(59, 3) / 1000.0)
+        joints = points.tolist()
+        joints[4] = None
+        frame = parse_joint_frame(
+            {
+                "schema": "dt-pose.pose3d/v1",
+                "source": "rig_b",
+                "frame": 23,
+                "timestamp_ns": 1_756_700_000_123_456_789,
+                "units": "m",
+                "layout": "factory59",
+                "joints": joints,
+                "single_person": True,
+            },
+            units="auto",
+            axis_map="x,y,z",
+            fallback_id=0,
+        )
+        self.assertEqual(frame.frame_id, 23)
+        self.assertEqual(frame.input_unit, "m")
+        self.assertEqual(frame.ptp_epoch_ns, 1_756_700_000_123_456_789)
+        self.assertTrue(frame.ptp_exact)
+        np.testing.assert_allclose(frame.joints[5:], points[5:])
+        self.assertTrue(np.isnan(frame.raw_joints[4]).all())
+        self.assertEqual(frame.confidence[4], 0.0)
+
+    def test_dt_pose_v1_refuses_a_non_factory59_layout(self):
+        with self.assertRaisesRegex(ValueError, "layout must be factory59"):
+            parse_joint_frame(
+                {
+                    "schema": "dt-pose.pose3d/v1",
+                    "units": "m",
+                    "layout": "coco17",
+                    "joints": np.zeros((59, 3)).tolist(),
+                },
+                units="auto",
+                axis_map="x,y,z",
+                fallback_id=0,
+            )
+
     def test_old_wholebody_mapping(self):
         mapping = {str(i): [float(i), 0.0, 1.0] for i in FACTORY_IDS}
         frame = parse_joint_frame(

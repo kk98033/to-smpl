@@ -2,7 +2,7 @@
 
 The input is one JSON object per datagram/line.  Accepted joint fields are:
 
-* ``keypoints_3d``: a [59, 3] array in factory order (body17, LH21, RH21)
+* ``keypoints_3d`` or dt-pose v1 ``joints``: a [59, 3] array in factory order (body17, LH21, RH21)
 * ``keypoint_3d``: a mapping keyed by COCO-WholeBody ids
   (0..16, 91..111, 112..132)
 
@@ -81,18 +81,20 @@ def parse_axis_map(spec: str) -> tuple[tuple[int, float], ...]:
 
 
 def _ordered_joints(record: dict) -> np.ndarray:
-    raw = record.get("keypoints_3d", record.get("points_3d"))
+    raw = record.get("keypoints_3d", record.get("points_3d", record.get("joints")))
     if raw is not None:
+        if isinstance(raw, list):
+            raw = [[float("nan")] * 3 if joint is None else joint for joint in raw]
         points = np.asarray(raw, dtype=np.float32)
         if points.shape == (133, 3):
             points = points[np.asarray(FACTORY_IDS)]
         if points.shape != (59, 3):
-            raise ValueError(f"keypoints_3d must have shape [59,3] (or [133,3]), got {points.shape}")
+            raise ValueError(f"joint array must have shape [59,3] (or [133,3]), got {points.shape}")
         return points
 
     raw_map = record.get("keypoint_3d")
     if not isinstance(raw_map, dict):
-        raise ValueError("missing keypoints_3d [59,3] or keypoint_3d mapping")
+        raise ValueError("missing keypoints_3d/points_3d/joints [59,3] or keypoint_3d mapping")
     missing = [joint_id for joint_id in FACTORY_IDS if str(joint_id) not in raw_map and joint_id not in raw_map]
     if missing:
         raise ValueError(f"keypoint_3d is missing COCO-WholeBody ids {missing[:8]}")
@@ -128,27 +130,49 @@ def _confidence(record: dict) -> np.ndarray:
 
 def parse_joint_frame(record: dict, *, units: str, axis_map: str, fallback_id: int) -> JointFrame:
     schema = record.get("schema")
-    if schema not in (None, "factory_59pt_body_hands"):
-        raise ValueError(f"unsupported schema {schema!r}; expected factory_59pt_body_hands")
+    supported_schemas = (None, "factory_59pt_body_hands", "dt-pose.pose3d/v1")
+    if schema not in supported_schemas:
+        raise ValueError(
+            f"unsupported schema {schema!r}; expected factory_59pt_body_hands "
+            "or dt-pose.pose3d/v1"
+        )
+    if schema == "dt-pose.pose3d/v1":
+        layout = record.get("layout")
+        if layout != "factory59":
+            raise ValueError(
+                f"dt-pose.pose3d/v1 layout must be factory59, got {layout!r}"
+            )
     points = _ordered_joints(record)
     raw_points = points.copy()
     confidence = _confidence(record)
     confidence[~np.isfinite(points).all(axis=1)] = 0.0
     if units == "auto":
         # factory_59pt_dlt_demo's JSONL/NPZ contract is calibration-world mm.
-        # A container JSON may make the same fact explicit in metadata.
-        units = str(record.get("_input_units", "mm")).lower()
+        # dt-pose.pose3d/v1 declares metres in `units`; legacy records declare
+        # `_input_units` or retain their historical mm default.
+        units = str(record.get("units", record.get("_input_units", "mm"))).lower()
     if units not in ("m", "mm"):
         raise ValueError(f"input units must be m or mm, got {units!r}")
     scale = 0.001 if units == "mm" else 1.0
     points = points * scale
     mapping = parse_axis_map(axis_map)
     points = np.stack([points[:, index] * sign for index, sign in mapping], axis=1)
-    frame_id = int(record.get("frame_id", record.get("frame_index", record.get("frameId", fallback_id))))
-    timestamp = float(record.get("timestamp", record.get("timestamp_s", time.time())))
-    raw_ptp = record.get("ptp_epoch_ns")
+    frame_id = int(record.get(
+        "frame_id", record.get(
+            "frame_index", record.get("frameId", record.get("frame", fallback_id))
+        )
+    ))
+    raw_ptp = record.get("ptp_epoch_ns", record.get("timestamp_ns"))
+    fallback_timestamp = (
+        int(raw_ptp) / 1_000_000_000.0 if raw_ptp is not None else time.time()
+    )
+    timestamp = float(record.get(
+        "timestamp", record.get("timestamp_s", fallback_timestamp)
+    ))
     ptp_exact = raw_ptp is not None
-    ptp_epoch_ns = int(raw_ptp) if ptp_exact else int(round(timestamp * 1_000_000_000.0))
+    ptp_epoch_ns = (
+        int(raw_ptp) if ptp_exact else int(round(timestamp * 1_000_000_000.0))
+    )
     coordinate_frame = str(record.get("coordinate_frame", "unknown"))
     return JointFrame(
         frame_id, timestamp, points.astype(np.float32), confidence,
@@ -450,7 +474,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--input", default="unix:///tmp/dt_pose_3d.sock")
     parser.add_argument(
         "--input-units", choices=("auto", "m", "mm"), default="auto",
-        help="auto follows main_predict's mm contract; set m for a custom metric stream",
+        help="auto follows each payload's units field; legacy payloads without units default to mm",
     )
     parser.add_argument(
         "--axis-map", default="x,-y,z",
