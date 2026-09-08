@@ -60,7 +60,7 @@ UDP 不提供連線、ack、重送、順序或送達保證。每個 datagram 必
 | <code>reliable</code> | bool/number [59] 或 object | 否 | 陣列為 Factory59 順序；object 以 WholeBody ID 為 key；轉成 [0,1] confidence |
 | <code>reprojection_errors_px</code> | number [59] | 否 | reliable 省略時，有限且 ≤120 px 視為可靠 |
 
-缺失或非有限座標會把該點 confidence 設為 0。auto 模式依 payload 宣告單位；舊格式未宣告時才執行預設 mm → m 與 <code>x,-y,z</code> 軸映射；RSV1 保留映射前的原始數值和單位。
+缺失或非有限座標會把該點 confidence 設為 0。auto 模式依 payload 宣告單位；舊格式未宣告時才執行預設 mm → m 與 <code>x,-y,-z</code> proper-rotation 軸映射；RSV1 保留映射前的原始數值和單位。
 
 ### 59 點順序
 
@@ -176,7 +176,7 @@ elif packet[:4] == b"RSV1":
   "timestamp_ns": 1725150000123456789,
   "units": "m",
   "coordinate_frame": "smpl_axes_pelvis_relative",
-  "axis_map": "x,-y,z",
+  "axis_map": "x,-y,-z",
   "fit_profile": "upper-body",
   "solver": {"endpoint_weight": 0.5, "torso_weight": 0.05, "temporal_weight": 0.01, "robust_huber": false},
   "selected_body25_joints": [0,1,2,3,4,5,6,7,8,9,12],
@@ -188,11 +188,47 @@ elif packet[:4] == b"RSV1":
   "fit_residual_mm": 31.2,
   "worst_joint_residual_mm": 66.4,
   "torso_orientation_deg": 2.1,
+  "worst_target_joint": {"index": 3, "joint": "right_elbow", "mm": 91.4},
+  "pose_diagnostics": {
+    "joint_names": ["pelvis", "left_hip"],
+    "rotation_deg": [12.0, 48.0],
+    "twist_deg": [null, 31.0],
+    "delta_deg": [2.0, 8.0],
+    "worst_twist": {"index": 17, "joint": "right_shoulder", "deg": 82.0},
+    "worst_delta": {"index": 19, "joint": "right_elbow", "deg": 51.0},
+    "warning_joints": [{"index": 17, "joint": "right_shoulder", "reasons": ["twist"]}],
+    "thresholds_deg": {"rotation": 120.0, "twist": 75.0, "delta": 45.0}
+  },
   "fixed_betas": [0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0]
 }
 ~~~
 
 實際陣列長度分別是 `59/25/25/24/25/10`。`joint_residual_mm` 中未參與目前 profile 的 Body25 關節為 JSON `null`。Dashboard 的橘色骨架來自 SMPL mesh 經同一 Body25 regressor 得到的 `fitted_body25`，並只顯示目前 profile 實際選取的關節；MPJPE 直接使用 `fit_residual_mm`，不會在瀏覽器內重新擬造骨架。
+
+`pose_diagnostics` 的 `rotation_deg`、`twist_deg`、`delta_deg` 與 `joint_names` 實際皆為 SMPL24 長度 24。`twist_deg` 是關節相對主要子骨方向的 swing-twist 分解；沒有主要子骨的末端關節為 `null`。Dashboard 以 rotation 120°、twist 75°、單幀 geodesic delta 45° 為預設警示門檻。這些指標用來找「關節點接近但表面沿骨軸扭轉」的欠約束解，不等同 MPJPE。
+
+## 4.2 SMPL mesh 除錯快照（檔案介面）
+
+`--mesh-preview-json PATH` 以 atomic replace 維護最新擬合候選 frame，不是 UDP，也不是 append-only log。`accepted` 表示此候選是否通過安全門檻並送往 Unity；`faces` 使用 compact vertex indices；`source_vertex_count` 保留完整 SMPL surface 頂點數，`vertices` 只包含被抽樣 faces 引用的點。
+
+~~~json
+{
+  "schema": "smpl-0901.mesh-preview/v1",
+  "frame": 1054,
+  "timestamp_ns": 1725150000123456789,
+  "units": "m",
+  "coordinate_frame": "smpl_axes_pelvis_relative",
+  "fit_profile": "upper-body",
+  "source_vertex_count": 6890,
+  "vertices": [[0.012, -0.431, 0.083]],
+  "faces": [[0, 1, 2]],
+  "face_joint": [16]
+}
+~~~
+
+Dashboard 透過受 token 保護的 `GET /api/smpl-mesh` 按需取得此快照。預設以 vertex clustering 簡化至最多 2400 triangles，目的是確認 server-side SMPL surface 與 fitted joints 是否同幀、同座標；它不是 Unity 最終材質或 skinning 畫面。
+
+Bridge 會依 `--diagnostic-log-every` 定期在 stdout 輸出單行 `[bridge] distortion {JSON}`，schema 為 `smpl-0901.distortion-log/v1`。內容包含 `accepted`、`action`、`reasons`、`fit_residual_mm`、`fit_elapsed_ms`、`fit_iterations`、`torso_orientation_deg`、`worst_target_joint`、`worst_rotation`、`worst_twist`、`worst_delta` 與 `warning_joints`。`accepted:false` 表示候選姿勢被安全門檻攔截，SMV2 不送出並讓 Unity 保留上一個正常姿勢；fit/mesh 診斷仍更新，Dashboard 會動態顯示並標記該候選。`body_facing_mismatch_deg` 是輸入上半身前向與 SMPL 雙腳掌水平前向的夾角，超過 90°代表上下半身前後相反。pelvis 的絕對旋轉代表人物朝向，不列入 rotation distortion；pelvis 的單幀 delta 仍會檢查。
 
 ## 5. CLI contract
 
@@ -200,7 +236,7 @@ elif packet[:4] == b"RSV1":
 | --- | --- | --- |
 | <code>--input</code> | unix:///tmp/dt_pose_3d.sock | 支援 udp、unix、json、jsonl、npz、stdin URI |
 | <code>--input-units</code> | auto | auto、m、mm |
-| <code>--axis-map</code> | x,-y,z | signed xyz permutation |
+| <code>--axis-map</code> | x,-y,-z | proper right-handed camera-to-SMPL rotation; reflection maps such as x,-y,z cause anatomical twisting |
 | <code>--unity-host</code> | 127.0.0.1 | SMV2 目的 IPv4/hostname |
 | <code>--unity-port</code> | 9095 | SMV2 目的 UDP port |
 | <code>--raw-skeleton-host</code> | Unity host | RSV1 目的 IPv4/hostname |
@@ -209,13 +245,21 @@ elif packet[:4] == b"RSV1":
 | <code>--device</code> | cuda | PyTorch device |
 | <code>--calibration-frames</code> | 30 | fixed-beta 起始校正幀數 |
 | <code>--calibration-iterations</code> | 100 | 體型校正迭代數 |
-| <code>--iterations</code> | 100 | 每幀擬合迭代數 |
+| <code>--iterations</code> | 100 | 每幀擬合迭代數；Docker Compose 為即時用途預設 `SMPL_ITERATIONS=50` |
 | <code>--fit-profile</code> | full | `full` 使用 Body25 0..14；`upper-body` 使用 0..9,12，排除膝與腳踝並凍結腿部 rotation；Compose 預設 upper-body |
 | <code>--beta-limit</code> | 3.0 | 校正 betas 的絕對值上限；0 停用 |
 | <code>--fit-jsonl</code> | disabled | 寫出同幀實際 fitted joints 與 residual |
+| <code>--mesh-preview-json</code> | disabled | atomic latest-only connected SMPL surface JSON |
+| <code>--mesh-preview-faces</code> | 2400 | 連續 mesh preview 的三角面上限 |
 | <code>--endpoint-weight</code> | 0.5 | 端點 loss 權重 |
 | <code>--torso-weight</code> | 0.05 | torso normal loss 權重 |
+| <code>--body-facing-weight</code> | 0.01 | torso 與腳掌水平前向一致性 loss 權重 |
 | <code>--temporal-weight</code> | 0.01 | temporal smoothing 權重 |
+| <code>--max-fit-residual-mm</code> | 100 | MPJPE 超標時保留上一個正常姿勢；0 停用 |
+| <code>--max-twist-deg</code> | 100 | 任一軸向 twist 超標時保留上一姿勢；0 停用 |
+| <code>--max-delta-deg</code> | 90 | 任一關節單幀旋轉跳動超標時保留上一姿勢；0 停用 |
+| <code>--max-facing-mismatch-deg</code> | 90 | torso 與腳掌水平朝向差超標時保留上一姿勢；0 停用 |
+| <code>--diagnostic-log-every</code> | 10 | 每 N 個成功 fit 輸出一筆 structured distortion log；被攔截幀一律記錄；0 停用正常幀定期紀錄 |
 | <code>--robust-huber</code> | off | 啟用 Huber loss |
 | <code>--min-confidence</code> | 0.5 | 目前 fit profile 所選 Body25 點的最低 confidence |
 

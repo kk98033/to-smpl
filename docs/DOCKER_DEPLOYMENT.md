@@ -141,7 +141,7 @@ sudo UNITY_HOST=192.168.200.1 SMPL_FIT_PROFILE=full \
   docker compose up -d --force-recreate bridge
 ~~~
 
-每個成功擬合 frame 會寫至 `artifacts/live/smpl_fit.jsonl`。若 Dashboard 位於相鄰的 `digital-twin-pose` repo，啟動時共用它的輸出目錄：
+每個擬合候選 frame 都會寫至 `artifacts/live/smpl_fit.jsonl`，並以 `accepted` 標示是否通過安全門檻送往 Unity。同時會以 latest-only atomic snapshot 寫入 `artifacts/live/smpl_mesh.json`，供 Dashboard 的 **SMPL Mesh** 除錯頁籤使用；`SMPL_MESH_PREVIEW_FACES` 可調整 vertex-cluster 簡化後的三角面上限，預設 2400。若 Dashboard 位於相鄰的 `digital-twin-pose` repo，啟動時共用它的輸出目錄：
 
 ~~~bash
 sudo UNITY_HOST=192.168.200.1 \
@@ -181,6 +181,10 @@ sudo docker compose ps
 # 查看最近 100 行並持續追蹤
 sudo docker compose logs -f --tail=100 bridge
 
+# 只看 SMPL 扭曲診斷（預設每 10 個成功 fit 一筆）
+sudo docker compose logs -f --tail=100 bridge \
+  | grep --line-buffered '\[bridge\] distortion'
+
 # 沿用既有 container 中保存的 UNITY_HOST
 sudo docker compose restart bridge
 
@@ -197,6 +201,8 @@ sudo UNITY_HOST=<UNITY_IP> docker compose up -d
 ~~~
 
 執行 <code>down</code> 後再次 <code>up</code> 必須重新指定目前的 <code>UNITY_HOST</code>；只做 <code>restart</code> 則沿用 container 建立時保存的值。
+
+診斷 log 的間隔由建立 container 時的 <code>SMPL_DIAGNOSTIC_LOG_EVERY</code> 控制；設為 <code>1</code> 會逐幀輸出，<code>0</code> 停用正常幀的定期紀錄。被安全門檻攔截的幀仍會立刻輸出 <code>accepted:false</code>。Compose 另以 <code>SMPL_AXIS_MAP=x,-y,-z</code> 做 determinant +1 的 proper rotation；不可改回只有 Y 反轉的 <code>x,-y,z</code>，否則鏡射手性會迫使腰椎或上半身扭轉。每幀預設 <code>SMPL_ITERATIONS=50</code>；提高至 100 較準但約慢一倍。預設門檻為 MPJPE 100 mm、twist 100°、delta 90°、輸入上半身／腳掌水平朝向差 90°，可用 <code>SMPL_MAX_FIT_RESIDUAL_MM</code>、<code>SMPL_MAX_TWIST_DEG</code>、<code>SMPL_MAX_DELTA_DEG</code>、<code>SMPL_MAX_FACING_MISMATCH_DEG</code> 調整。Unity 會保持上一個正常 SMV2；Dashboard 的 fit/mesh 診斷仍逐候選更新。修改後須以 <code>docker compose up -d --force-recreate bridge</code> 重建 container 設定，單純 <code>restart</code> 不會套用新值。
 
 ## 8. 網路與防火牆
 
