@@ -29,6 +29,7 @@ class FixedBetasFitResult:
     translation: torch.Tensor       # (B, 3)
     pred_body25: torch.Tensor       # (B, 25, 3)
     pred_smpl24: torch.Tensor       # (B, 24, 3), native SMPL kinematic joints
+    pred_vertices: torch.Tensor      # (B, 6890, 3), fitted SMPL surface
     fixed_betas: torch.Tensor       # (10,) or (B, 10)
     residual_mm: torch.Tensor       # (B,) selected weighted MPJPE in mm
     torso_orientation_deg: torch.Tensor # (B,) torso error in deg
@@ -152,6 +153,7 @@ def fit_fixed_betas_soft_target(
     endpoint_weight: float = 0.5,
     torso_normal_weight: float = 0.02,
     pose_prior_weight: float = 0.001,
+    body_facing_weight: float = 0.0,
     temporal_smooth_weight: float = 0.01,
     prev_body_pose: torch.Tensor | None = None,
     use_huber: bool = False,
@@ -245,12 +247,42 @@ def fit_fixed_betas_soft_target(
         else:
             endpoint_loss = torch.tensor(0.0, device=device)
 
-        # Torso normal orientation loss
+        # Torso normal is shared by the target-orientation and body-facing losses.
+        pred_torso_normal = compute_torso_normal(pred)
         if torso_normal_weight > 0:
-            pred_torso_normal = compute_torso_normal(pred)
             torso_loss = (1.0 - (pred_torso_normal * target_torso_normal).sum(dim=-1)).mean()
         else:
             torso_loss = torch.tensor(0.0, device=device)
+
+        # Keep the SMPL feet/pelvis facing the observed upper body.  The input must first
+        # be converted with a proper (determinant +1) axis rotation; a reflected skeleton
+        # has incompatible handedness and cannot be fitted without twisting.  The target
+        # direction is detached: allowing the fitted torso to supply this target lets
+        # the cheaper solution rotate the spine 180 degrees while frozen legs stay put.
+        if body_facing_weight > 0:
+            feet_forward = (
+                (smpl.joints[:, 10] - smpl.joints[:, 7])
+                + (smpl.joints[:, 11] - smpl.joints[:, 8])
+            ) * 0.5
+            torso_horizontal = torch.stack(
+                (target_torso_normal[:, 0], torch.zeros_like(target_torso_normal[:, 1]),
+                 target_torso_normal[:, 2]), dim=-1
+            )
+            feet_horizontal = torch.stack(
+                (feet_forward[:, 0], torch.zeros_like(feet_forward[:, 1]),
+                 feet_forward[:, 2]), dim=-1
+            )
+            torso_horizontal = torso_horizontal / torch.linalg.norm(
+                torso_horizontal, dim=-1, keepdim=True
+            ).clamp(min=1e-8)
+            feet_horizontal = feet_horizontal / torch.linalg.norm(
+                feet_horizontal, dim=-1, keepdim=True
+            ).clamp(min=1e-8)
+            facing_loss = (
+                1.0 - (torso_horizontal * feet_horizontal).sum(dim=-1)
+            ).mean()
+        else:
+            facing_loss = torch.tensor(0.0, device=device)
 
         # Pose prior
         prior_loss = body.square().mean()
@@ -266,14 +298,15 @@ def fit_fixed_betas_soft_target(
             joint_loss
             + endpoint_weight * endpoint_loss
             + torso_normal_weight * torso_loss
+            + body_facing_weight * facing_loss
             + pose_prior_weight * prior_loss
             + temporal_smooth_weight * temporal_loss
         )
         loss.backward()
         if frozen_pose_indices and body.grad is not None:
             for pose_index in frozen_pose_indices:
-                start = int(pose_index) * 3
-                body.grad[:, start:start + 3] = 0.0
+                offset = int(pose_index) * 3
+                body.grad[:, offset:offset + 3] = 0.0
         optimizer.step()
 
     if device.type == "cuda":
@@ -288,6 +321,7 @@ def fit_fixed_betas_soft_target(
         )
         pred = torch.einsum("bvc,jv->bjc", smpl.vertices, body25_regressor) + translation.unsqueeze(1)
         pred_smpl24 = smpl.joints[:, :24] + translation.unsqueeze(1)
+        pred_vertices = smpl.vertices + translation.unsqueeze(1)
         pred_torso_normal = compute_torso_normal(pred)
 
         # Weighted MPJPE for the active fit profile (mm)
@@ -308,6 +342,7 @@ def fit_fixed_betas_soft_target(
         translation=translation.detach(),
         pred_body25=pred.detach(),
         pred_smpl24=pred_smpl24.detach(),
+        pred_vertices=pred_vertices.detach(),
         fixed_betas=betas.detach(),
         residual_mm=residual_mm.detach(),
         torso_orientation_deg=torso_deg.detach(),

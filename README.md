@@ -111,6 +111,11 @@ RSV1 固定為 little-endian、封包大小 **1032 Bytes**，小於標準 Ethern
 ### 真實 SMPL 擬合診斷 JSONL
 
 指定 `--fit-jsonl PATH` 時，Bridge 每個成功的 SMPL frame 會追加一筆 `smpl-0901.fit/v1`。內容包括同一 `frame` 的 `target_factory59`、`target_body25`、實際 SMPL model 的 `fitted_smpl24`、Body25 regressor 的 `fitted_body25`、逐關節 residual 與真實 `fit_residual_mm`。整合 Dashboard 使用這份資料，不再在瀏覽器內用固定骨長偽造 SMPL 骨架。
+每筆診斷也包含最差 Body25 target、SMPL24 local rotation、沿主要子骨軸的 twist、相對上一幀的 geodesic rotation jump、輸入上半身／腳掌水平朝向差與超標關節清單。fitter 另以預設 `SMPL_BODY_FACING_WEIGHT=0.01` 的 facing alignment loss（輸入先以 determinant +1 的 `x,-y,-z` proper rotation 轉換，避免單軸鏡射造成不可解的左右手性），防止 pelvis／腿朝後而上半身反弓來換取低關節位置誤差。
+
+指定 `--mesh-preview-json PATH` 時，Bridge 會以 atomic replace 維護一份最新候選 frame 的 `smpl-0901.mesh-preview/v1`，包含真正 SMPL forward surface 的 vertex-cluster 簡化後的 compact vertices 與連續 faces，並以 `accepted` 標示是否送往 Unity。預設 `--mesh-preview-faces 2400`，供 Dashboard 除錯而不讓 append-only JSONL 快速膨脹；此檔案不是 UDP 協定，也不影響 Unity 輸出。
+
+Bridge 預設每 10 個成功 fit 輸出一筆 `[bridge] distortion {JSON}` structured log；以 `SMPL_DIAGNOSTIC_LOG_EVERY` 調整 Compose 間隔，`1` 表示每幀，`0` 停用。候選姿勢若超過 MPJPE 100 mm、任一關節 twist 100°、單幀 rotation delta 90°，或上半身／腳掌水平朝向差 90°，Bridge 會記錄 `accepted:false`、`action:"hold_previous"`，不更新 fitting 狀態也不送出壞的 SMV2；Unity 保留最後正常姿勢，Dashboard 仍持續顯示並標記被攔截的候選供 Debug。四個門檻可分別用 `SMPL_MAX_FIT_RESIDUAL_MM`、`SMPL_MAX_TWIST_DEG`、`SMPL_MAX_DELTA_DEG`、`SMPL_MAX_FACING_MISMATCH_DEG` 調整，設為 `0` 可個別停用。
 
 ## 4. 0901 擬合策略與效能
 

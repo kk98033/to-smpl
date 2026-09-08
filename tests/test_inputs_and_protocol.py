@@ -21,10 +21,14 @@ from smpl_0901.service import (
     FACTORY_IDS,
     FIT_PROFILES,
     body25_confidence_from_factory59,
+    body_facing_mismatch_deg,
     body25_from_factory59,
+    compact_mesh_preview_topology,
     iter_json_records,
     parse_joint_frame,
+    pose_rotation_diagnostics,
     Smpl0901Bridge,
+    unsafe_fit_reasons,
 )
 
 
@@ -163,6 +167,83 @@ class InputContractTests(unittest.TestCase):
         self.assertAlmostEqual(float(mapped[1]), 0.3)
         self.assertAlmostEqual(float(mapped[8]), 0.2)
         self.assertAlmostEqual(float(mapped[5]), 0.8)
+
+    def test_mesh_preview_topology_is_compact_and_bounded(self):
+        vertices = np.asarray(
+            [
+                [0, 0, 0], [1, 0, 0], [1, 1, 0], [0, 1, 0],
+                [0, 0, 1], [1, 0, 1], [1, 1, 1], [0, 1, 1],
+            ],
+            dtype=np.float32,
+        )
+        faces = np.asarray(
+            [[0, 1, 2], [0, 2, 3], [4, 6, 5], [4, 7, 6]], dtype=np.int32
+        )
+        vertex_indices, compact = compact_mesh_preview_topology(vertices, faces, 4)
+        self.assertGreater(len(compact), 0)
+        self.assertLessEqual(len(compact), 4)
+        self.assertLess(int(compact.max()), len(vertex_indices))
+        with self.assertRaises(ValueError):
+            compact_mesh_preview_topology(vertices, faces, 0)
+
+    def test_pose_rotation_diagnostics_identifies_axial_twist_and_jump(self):
+        rest = np.zeros((24, 3), dtype=np.float32)
+        rest[6] = [0.0, 0.0, 1.0]
+        body = np.zeros((23, 3), dtype=np.float32)
+        body[2, 2] = np.pi / 2.0  # SMPL joint 3, spine1, twists around z
+        diagnostic = pose_rotation_diagnostics(
+            np.zeros(3), body, rest, np.zeros(3), np.zeros((23, 3))
+        )
+        self.assertAlmostEqual(diagnostic["rotation_deg"][3], 90.0, places=4)
+        self.assertAlmostEqual(diagnostic["twist_deg"][3], 90.0, places=4)
+        self.assertAlmostEqual(diagnostic["delta_deg"][3], 90.0, places=4)
+        self.assertEqual(diagnostic["worst_twist"]["joint"], "spine1")
+        self.assertIn("twist", diagnostic["warning_joints"][0]["reasons"])
+
+    def test_root_facing_rotation_is_not_reported_as_body_distortion(self):
+        diagnostic = pose_rotation_diagnostics(
+            np.asarray([0.0, np.pi, 0.0]),
+            np.zeros((23, 3)),
+            np.zeros((24, 3)),
+        )
+        self.assertAlmostEqual(diagnostic["root_rotation_deg"], 180.0, places=4)
+        self.assertFalse(any(item["joint"] == "pelvis" for item in diagnostic["warning_joints"]))
+        self.assertNotEqual(diagnostic["worst_rotation"]["joint"], "pelvis")
+
+    def test_body_facing_mismatch_detects_opposite_feet(self):
+        body = np.zeros((25, 3), dtype=np.float32)
+        body[2] = [-1.0, 1.0, 0.0]
+        body[5] = [1.0, 1.0, 0.0]
+        joints = np.zeros((24, 3), dtype=np.float32)
+        joints[10] = [0.0, 0.0, -1.0]
+        joints[11] = [0.0, 0.0, -1.0]
+        self.assertAlmostEqual(body_facing_mismatch_deg(body, joints), 180.0)
+        joints[10, 2] = joints[11, 2] = 1.0
+        self.assertAlmostEqual(body_facing_mismatch_deg(body, joints), 0.0)
+
+    def test_unsafe_fit_reasons_apply_configurable_hold_thresholds(self):
+        diagnostic = {
+            "worst_twist": {"deg": 146.0},
+            "worst_delta": {"deg": 136.0},
+        }
+        self.assertEqual(
+            unsafe_fit_reasons(
+                120.0, diagnostic, max_residual_mm=100.0,
+                max_twist_deg=100.0, max_delta_deg=90.0,
+                facing_mismatch_deg=170.0, max_facing_mismatch_deg=90.0,
+            ),
+            [
+                "fit_residual>100mm", "twist>100deg", "delta>90deg",
+                "facing_mismatch>90deg",
+            ],
+        )
+        self.assertEqual(
+            unsafe_fit_reasons(
+                999.0, diagnostic, max_residual_mm=0.0,
+                max_twist_deg=0.0, max_delta_deg=0.0,
+            ),
+            [],
+        )
 
 
 class ProtocolTests(unittest.TestCase):

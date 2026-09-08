@@ -28,6 +28,8 @@ services:
           --input udp://0.0.0.0:9100 \
           --smpl-dir /models \
           --device cuda \
+          --axis-map "${SMPL_AXIS_MAP:-x,-y,-z}" \
+          --iterations "${SMPL_ITERATIONS:-50}" \
           --unity-host "$${UNITY_HOST}" \
           --unity-port 9095 \
           --raw-skeleton-host "$${UNITY_HOST}" \
@@ -37,4 +39,12 @@ services:
           --beta-limit "${SMPL_BETA_LIMIT:-3.0}" \
           --endpoint-weight "${SMPL_ENDPOINT_WEIGHT:-0.5}" \
           --torso-weight "${SMPL_TORSO_WEIGHT:-0.05}" \
-          --fit-jsonl /output/smpl_fit.jsonl
+          --body-facing-weight "${SMPL_BODY_FACING_WEIGHT:-0.01}" \
+          --max-fit-residual-mm "${SMPL_MAX_FIT_RESIDUAL_MM:-100}" \
+          --max-twist-deg "${SMPL_MAX_TWIST_DEG:-100}" \
+          --max-delta-deg "${SMPL_MAX_DELTA_DEG:-90}" \
+          --max-facing-mismatch-deg "${SMPL_MAX_FACING_MISMATCH_DEG:-90}" \
+          --fit-jsonl /output/smpl_fit.jsonl \
+          --mesh-preview-json /output/smpl_mesh.json \
+          --mesh-preview-faces "${SMPL_MESH_PREVIEW_FACES:-2400}" \
+          --diagnostic-log-every "${SMPL_DIAGNOSTIC_LOG_EVERY:-10}"

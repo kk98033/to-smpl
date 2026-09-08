@@ -26,6 +26,7 @@ from pathlib import Path
 from typing import Iterator
 
 import numpy as np
+from scipy.spatial.transform import Rotation
 
 # Python 3.11+ removed inspect.getargspec, which chumpy 0.70 still imports.
 if not hasattr(inspect, "getargspec"):
@@ -70,6 +71,14 @@ class JointFrame:
 
 class CalibrationPending(RuntimeError):
     """Normal startup state while the fixed-beta window is being collected."""
+
+
+class UnsafeFit(RuntimeError):
+    """Candidate pose exceeded a safety threshold and must not reach Unity."""
+
+    def __init__(self, diagnostic: dict[str, object]) -> None:
+        self.diagnostic = diagnostic
+        super().__init__(", ".join(diagnostic["reasons"]))
 
 
 def parse_axis_map(spec: str) -> tuple[tuple[int, float], ...]:
@@ -232,6 +241,214 @@ def _json_points(points: np.ndarray) -> list[list[float] | None]:
     return [row.tolist() if np.isfinite(row).all() else None for row in values]
 
 
+SMPL24_JOINT_NAMES = (
+    "pelvis", "left_hip", "right_hip", "spine1", "left_knee",
+    "right_knee", "spine2", "left_ankle", "right_ankle", "spine3",
+    "left_foot", "right_foot", "neck", "left_collar", "right_collar",
+    "head", "left_shoulder", "right_shoulder", "left_elbow",
+    "right_elbow", "left_wrist", "right_wrist", "left_hand", "right_hand",
+)
+BODY25_JOINT_NAMES = (
+    "nose", "neck", "right_shoulder", "right_elbow", "right_wrist",
+    "left_shoulder", "left_elbow", "left_wrist", "mid_hip", "right_hip",
+    "right_knee", "right_ankle", "left_hip", "left_knee", "left_ankle",
+    "right_eye", "left_eye", "right_ear", "left_ear", "left_big_toe",
+    "left_small_toe", "left_heel", "right_big_toe", "right_small_toe",
+    "right_heel",
+)
+SMPL_PRIMARY_CHILD = {
+    1: 4, 2: 5, 3: 6, 4: 7, 5: 8, 6: 9, 7: 10, 8: 11,
+    9: 12, 12: 15, 13: 16, 14: 17, 16: 18, 17: 19,
+    18: 20, 19: 21, 20: 22, 21: 23,
+}
+
+
+def pose_rotation_diagnostics(
+    root_rotvec: np.ndarray,
+    body_rotvec: np.ndarray,
+    rest_joints: np.ndarray,
+    previous_root: np.ndarray | None = None,
+    previous_body: np.ndarray | None = None,
+) -> dict[str, object]:
+    """Report local rotation magnitude, axial twist, and frame-to-frame jump."""
+    current = np.concatenate(
+        [np.asarray(root_rotvec, dtype=np.float64).reshape(1, 3),
+         np.asarray(body_rotvec, dtype=np.float64).reshape(23, 3)]
+    )
+    rotation_deg = np.degrees(Rotation.from_rotvec(current).magnitude())
+    twist_deg: list[float | None] = [None] * 24
+    rest = np.asarray(rest_joints, dtype=np.float64)
+    quaternions = Rotation.from_rotvec(current).as_quat()
+    for joint, child in SMPL_PRIMARY_CHILD.items():
+        axis = rest[child] - rest[joint]
+        norm = np.linalg.norm(axis)
+        if norm < 1e-8:
+            continue
+        axis /= norm
+        quat = quaternions[joint]
+        signed = float(np.dot(quat[:3], axis))
+        angle = 2.0 * np.arctan2(signed, float(quat[3]))
+        angle = (angle + np.pi) % (2.0 * np.pi) - np.pi
+        twist_deg[joint] = abs(float(np.degrees(angle)))
+
+    delta_deg: list[float | None] = [None] * 24
+    if previous_root is not None and previous_body is not None:
+        previous = np.concatenate(
+            [np.asarray(previous_root, dtype=np.float64).reshape(1, 3),
+             np.asarray(previous_body, dtype=np.float64).reshape(23, 3)]
+        )
+        delta = Rotation.from_rotvec(previous).inv() * Rotation.from_rotvec(current)
+        delta_deg = np.degrees(delta.magnitude()).tolist()
+
+    def worst(
+        values: list[float | None] | np.ndarray, *, include_root: bool = True
+    ) -> dict[str, object] | None:
+        finite = [(index, float(value)) for index, value in enumerate(values)
+                  if (include_root or index != 0)
+                  and value is not None and np.isfinite(value)]
+        if not finite:
+            return None
+        index, value = max(finite, key=lambda item: item[1])
+        return {"index": index, "joint": SMPL24_JOINT_NAMES[index], "deg": value}
+
+    warnings = []
+    for index, name in enumerate(SMPL24_JOINT_NAMES):
+        reasons = []
+        if index != 0 and rotation_deg[index] > 120.0:
+            reasons.append("rotation")
+        if twist_deg[index] is not None and twist_deg[index] > 75.0:
+            reasons.append("twist")
+        if delta_deg[index] is not None and delta_deg[index] > 45.0:
+            reasons.append("temporal_jump")
+        if reasons:
+            warnings.append({"index": index, "joint": name, "reasons": reasons})
+
+    return {
+        "joint_names": list(SMPL24_JOINT_NAMES),
+        "root_rotation_deg": float(rotation_deg[0]),
+        "rotation_deg": rotation_deg.tolist(),
+        "twist_deg": twist_deg,
+        "delta_deg": delta_deg,
+        "worst_rotation": worst(rotation_deg, include_root=False),
+        "worst_twist": worst(twist_deg),
+        "worst_delta": worst(delta_deg),
+        "warning_joints": warnings,
+        "thresholds_deg": {"rotation": 120.0, "twist": 75.0, "delta": 45.0},
+    }
+
+
+def body_facing_mismatch_deg(body25: np.ndarray, smpl24: np.ndarray) -> float | None:
+    """Horizontal angle between observed torso facing and SMPL feet.
+
+    This assumes the input was converted using a proper (determinant +1) axis map.
+    """
+    body = np.asarray(body25, dtype=np.float64)
+    joints = np.asarray(smpl24, dtype=np.float64)
+    if body.shape != (25, 3) or joints.shape != (24, 3):
+        raise ValueError("facing diagnostic expects Body25 [25,3] and SMPL24 [24,3]")
+    torso = np.cross(body[5] - body[2], (body[2] + body[5]) * 0.5 - body[8])
+    feet = ((joints[10] - joints[7]) + (joints[11] - joints[8])) * 0.5
+    torso[1] = 0.0
+    feet[1] = 0.0
+    denominator = float(np.linalg.norm(torso) * np.linalg.norm(feet))
+    if denominator < 1e-8:
+        return None
+    cosine = float(np.clip(np.dot(torso, feet) / denominator, -1.0, 1.0))
+    return float(np.degrees(np.arccos(cosine)))
+
+
+def unsafe_fit_reasons(
+    residual_mm: float,
+    pose_diagnostics: dict[str, object],
+    *,
+    max_residual_mm: float,
+    max_twist_deg: float,
+    max_delta_deg: float,
+    facing_mismatch_deg: float | None = None,
+    max_facing_mismatch_deg: float = 0.0,
+) -> list[str]:
+    """Return machine-readable reasons for holding a pathological candidate."""
+    reasons: list[str] = []
+    if max_residual_mm > 0 and residual_mm > max_residual_mm:
+        reasons.append(f"fit_residual>{max_residual_mm:g}mm")
+    worst_twist = pose_diagnostics.get("worst_twist")
+    if (
+        max_twist_deg > 0
+        and isinstance(worst_twist, dict)
+        and float(worst_twist["deg"]) > max_twist_deg
+    ):
+        reasons.append(f"twist>{max_twist_deg:g}deg")
+    worst_delta = pose_diagnostics.get("worst_delta")
+    if (
+        max_delta_deg > 0
+        and isinstance(worst_delta, dict)
+        and float(worst_delta["deg"]) > max_delta_deg
+    ):
+        reasons.append(f"delta>{max_delta_deg:g}deg")
+    if (
+        max_facing_mismatch_deg > 0
+        and facing_mismatch_deg is not None
+        and facing_mismatch_deg > max_facing_mismatch_deg
+    ):
+        reasons.append(f"facing_mismatch>{max_facing_mismatch_deg:g}deg")
+    return reasons
+
+
+def compact_mesh_preview_topology(
+    vertices: np.ndarray, faces: np.ndarray, max_faces: int
+) -> tuple[np.ndarray, np.ndarray]:
+    """Build a connected lightweight mesh with vertex-cluster decimation."""
+    template = np.asarray(vertices, dtype=np.float32)
+    source = np.asarray(faces, dtype=np.int32)
+    if template.ndim != 2 or template.shape[1] != 3:
+        raise ValueError(f"SMPL vertices must have shape [V,3], got {template.shape}")
+    if source.ndim != 2 or source.shape[1] != 3:
+        raise ValueError(f"SMPL faces must have shape [F,3], got {source.shape}")
+    if max_faces <= 0:
+        raise ValueError("mesh preview face count must be positive")
+    if source.min() < 0 or source.max() >= len(template):
+        raise ValueError("SMPL face index is outside the vertex array")
+
+    lower = template.min(axis=0)
+    extent = np.maximum(template.max(axis=0) - lower, 1e-6)
+    best: tuple[np.ndarray, np.ndarray] | None = None
+    best_count = -1
+    for resolution in range(2, 65):
+        cells = np.floor((template - lower) / extent * resolution).astype(np.int32)
+        _, representative, inverse = np.unique(
+            cells, axis=0, return_index=True, return_inverse=True
+        )
+        mapped = inverse[source]
+        mapped = mapped[
+            (mapped[:, 0] != mapped[:, 1])
+            & (mapped[:, 1] != mapped[:, 2])
+            & (mapped[:, 0] != mapped[:, 2])
+        ]
+        if not len(mapped):
+            continue
+        _, unique_rows = np.unique(np.sort(mapped, axis=1), axis=0, return_index=True)
+        mapped = mapped[np.sort(unique_rows)]
+        if len(mapped) <= max_faces and len(mapped) > best_count:
+            used, compact = np.unique(mapped.reshape(-1), return_inverse=True)
+            best = (
+                representative[used].astype(np.int32),
+                compact.reshape(-1, 3).astype(np.int32),
+            )
+            best_count = len(mapped)
+
+    if best is None:
+        raise ValueError("could not build a non-empty SMPL mesh preview")
+    return best
+
+
+def write_json_atomic(path: Path, record: dict[str, object]) -> None:
+    """Replace a latest-only JSON snapshot without exposing partial writes."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(f".{path.name}.tmp")
+    temporary.write_text(json.dumps(record, allow_nan=False), encoding="utf-8")
+    temporary.replace(path)
+
+
 def iter_json_records(uri: str, *, max_datagram: int = 1 << 20) -> Iterator[dict]:
     """Yield records from sockets, stdin, main_predict JSON/JSONL, or NPZ."""
     if uri == "stdin://":
@@ -355,6 +572,10 @@ class Smpl0901Bridge:
         self.args = args
         self.device = torch.device(args.device)
         self.smpl_layer, self.regressor = load_smpl_body25(args.smpl_dir, self.device)
+        with torch.no_grad():
+            self.rest_joints = (
+                self.smpl_layer.J_regressor @ self.smpl_layer.v_template
+            ).detach().cpu().numpy()
         self.fixed_betas = None
         self.calibration: list[np.ndarray] = []
         self.prev_root = None
@@ -366,6 +587,29 @@ class Smpl0901Bridge:
             args.raw_skeleton_host or args.unity_host, args.raw_skeleton_port
         ) if args.raw_skeleton_port else None
         self.last_fit_record: dict[str, object] | None = None
+        self.last_mesh_record: dict[str, object] | None = None
+        self.mesh_vertex_indices: np.ndarray | None = None
+        self.mesh_vertex_indices_torch = None
+        self.mesh_faces: np.ndarray | None = None
+        self.mesh_face_joints: np.ndarray | None = None
+        if args.mesh_preview_json is not None:
+            vertex_indices, compact_faces = compact_mesh_preview_topology(
+                self.smpl_layer.v_template.detach().cpu().numpy(),
+                np.asarray(self.smpl_layer.faces),
+                args.mesh_preview_faces,
+            )
+            self.mesh_vertex_indices = vertex_indices
+            self.mesh_vertex_indices_torch = torch.tensor(
+                vertex_indices, dtype=torch.long, device=self.device
+            )
+            self.mesh_faces = compact_faces
+            compact_weights = (
+                self.smpl_layer.lbs_weights[self.mesh_vertex_indices_torch]
+                .detach().cpu().numpy()
+            )
+            self.mesh_face_joints = np.argmax(
+                compact_weights[compact_faces].mean(axis=1), axis=1
+            ).astype(np.int32)
 
     def close(self) -> None:
         self.sock.close()
@@ -383,7 +627,6 @@ class Smpl0901Bridge:
         print(f"[bridge] calibration complete; fixed betas={self.fixed_betas.cpu().numpy().round(3).tolist()}")
 
     def process(self, frame: JointFrame) -> tuple[bytes, float]:
-        from scipy.spatial.transform import Rotation
         from .fixed_betas_fitter import fit_fixed_betas_soft_target
         from .frame0_initializer import analytical_root_seed
         from .protocol_v2 import wrist_local_hand
@@ -420,6 +663,14 @@ class Smpl0901Bridge:
         else:
             init_root = self.prev_root
         target = self.torch.tensor(target_np[None], dtype=self.torch.float32, device=self.device)
+        previous_root_np = (
+            None if self.prev_root is None
+            else self.prev_root[0].detach().cpu().numpy()
+        )
+        previous_body_np = (
+            None if self.prev_body is None
+            else self.prev_body[0].detach().cpu().numpy()
+        )
         result = fit_fixed_betas_soft_target(
             self.smpl_layer,
             self.regressor,
@@ -432,6 +683,7 @@ class Smpl0901Bridge:
             joint_indices=selected,
             endpoint_weight=self.args.endpoint_weight,
             torso_normal_weight=self.args.torso_weight,
+            body_facing_weight=self.args.body_facing_weight,
             temporal_smooth_weight=self.args.temporal_weight,
             prev_body_pose=self.prev_body,
             use_huber=self.args.robust_huber,
@@ -443,13 +695,12 @@ class Smpl0901Bridge:
                 if self.args.fit_profile == "upper-body" else ()
             ),
         )
-        self.prev_root = result.root_orient
-        self.prev_body = result.body_pose
-        self.prev_translation = result.translation
-
         pose = np.zeros(156, dtype=np.float32)
         root = result.root_orient[0].cpu().numpy()
         body = result.body_pose[0].reshape(23, 3).cpu().numpy()
+        pose_diagnostics = pose_rotation_diagnostics(
+            root, body, self.rest_joints, previous_root_np, previous_body_np
+        )
         pose[:3] = root
         pose[3:66] = body[:21].reshape(-1)
 
@@ -467,7 +718,25 @@ class Smpl0901Bridge:
             * 1000.0
         )
         residual = float(result.residual_mm[0].cpu())
+        worst_target_index = max(
+            selected, key=lambda index: float(residuals[index])
+        )
+        worst_target_joint = {
+            "index": int(worst_target_index),
+            "joint": BODY25_JOINT_NAMES[worst_target_index],
+            "mm": float(residuals[worst_target_index]),
+        }
         torso_deg = float(result.torso_orientation_deg[0].cpu())
+        facing_mismatch_deg = body_facing_mismatch_deg(target_np, pred_smpl24)
+        safety_reasons = unsafe_fit_reasons(
+            residual,
+            pose_diagnostics,
+            max_residual_mm=self.args.max_fit_residual_mm,
+            max_twist_deg=self.args.max_twist_deg,
+            max_delta_deg=self.args.max_delta_deg,
+            facing_mismatch_deg=facing_mismatch_deg,
+            max_facing_mismatch_deg=self.args.max_facing_mismatch_deg,
+        )
         input_score = float(np.mean(frame.confidence))
         packet_frame = {
             "protocolVersion": 2,
@@ -503,6 +772,9 @@ class Smpl0901Bridge:
             "schema": "smpl-0901.fit/v1",
             "frame": frame.frame_id,
             "timestamp_ns": frame.ptp_epoch_ns,
+            "accepted": not bool(safety_reasons),
+            "action": "hold_previous" if safety_reasons else "send",
+            "reasons": safety_reasons,
             "units": "m",
             "coordinate_frame": "smpl_axes_pelvis_relative",
             "axis_map": self.args.axis_map,
@@ -510,6 +782,7 @@ class Smpl0901Bridge:
             "solver": {
                 "endpoint_weight": self.args.endpoint_weight,
                 "torso_weight": self.args.torso_weight,
+                "body_facing_weight": self.args.body_facing_weight,
                 "temporal_weight": self.args.temporal_weight,
                 "robust_huber": self.args.robust_huber,
             },
@@ -524,8 +797,56 @@ class Smpl0901Bridge:
             "fit_residual_mm": residual,
             "worst_joint_residual_mm": float(np.nanmax(residuals)),
             "torso_orientation_deg": torso_deg,
+            "fit_elapsed_ms": result.elapsed_seconds * 1000.0,
+            "fit_iterations": result.iterations,
+            "body_facing_mismatch_deg": facing_mismatch_deg,
+            "worst_target_joint": worst_target_joint,
+            "pose_diagnostics": pose_diagnostics,
             "fixed_betas": self.fixed_betas.cpu().numpy().tolist(),
         }
+        if self.mesh_vertex_indices_torch is not None and self.mesh_faces is not None:
+            preview_vertices = (
+                result.pred_vertices[0]
+                .index_select(0, self.mesh_vertex_indices_torch)
+                .cpu()
+                .numpy()
+            )
+            self.last_mesh_record = {
+                "schema": "smpl-0901.mesh-preview/v1",
+                "frame": frame.frame_id,
+                "timestamp_ns": frame.ptp_epoch_ns,
+                "accepted": not bool(safety_reasons),
+                "units": "m",
+                "coordinate_frame": "smpl_axes_pelvis_relative",
+                "fit_profile": self.args.fit_profile,
+                "source_vertex_count": int(result.pred_vertices.shape[1]),
+                "vertices": _json_points(preview_vertices),
+                "faces": self.mesh_faces.tolist(),
+                "face_joint": self.mesh_face_joints.tolist(),
+            }
+        if safety_reasons:
+            raise UnsafeFit({
+                "schema": "smpl-0901.distortion-log/v1",
+                "frame": frame.frame_id,
+                "timestamp_ns": frame.ptp_epoch_ns,
+                "accepted": False,
+                "action": "hold_previous",
+                "reasons": safety_reasons,
+                "fit_residual_mm": residual,
+                "torso_orientation_deg": torso_deg,
+                "fit_elapsed_ms": result.elapsed_seconds * 1000.0,
+                "fit_iterations": result.iterations,
+                "body_facing_mismatch_deg": facing_mismatch_deg,
+                "worst_target_joint": worst_target_joint,
+                "worst_rotation": pose_diagnostics["worst_rotation"],
+                "worst_twist": pose_diagnostics["worst_twist"],
+                "worst_delta": pose_diagnostics["worst_delta"],
+                "warning_joints": pose_diagnostics["warning_joints"],
+            })
+
+        self.prev_root = result.root_orient
+        self.prev_body = result.body_pose
+        self.prev_translation = result.translation
         return pack_protocol_v2_frame(packet_frame), residual
 
     def send(self, packet: bytes) -> None:
@@ -557,8 +878,8 @@ def parse_args() -> argparse.Namespace:
         help="auto follows each payload's units field; legacy payloads without units default to mm",
     )
     parser.add_argument(
-        "--axis-map", default="x,-y,z",
-        help="output axes as signed input axes; camera x-right/y-down/z-forward -> SMPL x-right/y-up/z-forward",
+        "--axis-map", default="x,-y,-z",
+        help="output axes as signed input axes; camera x-right/y-down/z-forward -> right-handed SMPL coordinates",
     )
     parser.add_argument("--unity-host", default="127.0.0.1")
     parser.add_argument("--unity-port", type=int, default=9095)
@@ -587,9 +908,41 @@ def parse_args() -> argparse.Namespace:
         "--fit-jsonl", type=Path,
         help="append same-frame raw, fitted Body25/SMPL24 joints and true residual diagnostics",
     )
+    parser.add_argument(
+        "--mesh-preview-json", type=Path,
+        help="atomically overwrite a latest-only connected SMPL surface mesh for Dashboard debug",
+    )
+    parser.add_argument(
+        "--mesh-preview-faces", type=int, default=2400,
+        help="maximum triangles in the connected, vertex-clustered SMPL preview",
+    )
     parser.add_argument("--endpoint-weight", type=float, default=0.5)
     parser.add_argument("--torso-weight", type=float, default=0.05)
+    parser.add_argument(
+        "--body-facing-weight", type=float, default=0.01,
+        help="align fitted torso front with the horizontal SMPL feet direction",
+    )
     parser.add_argument("--temporal-weight", type=float, default=0.01)
+    parser.add_argument(
+        "--max-fit-residual-mm", type=float, default=100.0,
+        help="hold the previous Unity pose when MPJPE exceeds this value; 0 disables",
+    )
+    parser.add_argument(
+        "--max-twist-deg", type=float, default=100.0,
+        help="hold the previous Unity pose when any axial joint twist exceeds this value; 0 disables",
+    )
+    parser.add_argument(
+        "--max-delta-deg", type=float, default=90.0,
+        help="hold the previous Unity pose when any one-frame joint rotation jump exceeds this value; 0 disables",
+    )
+    parser.add_argument(
+        "--max-facing-mismatch-deg", type=float, default=90.0,
+        help="hold Unity pose when horizontal torso/feet directions disagree; 0 disables",
+    )
+    parser.add_argument(
+        "--diagnostic-log-every", type=int, default=10,
+        help="emit one structured distortion log every N successful fits; 0 disables",
+    )
     parser.add_argument(
         "--robust-huber", action="store_true",
         help="optional noisy-input robustness; off preserves the measured 0901 squared-loss method",
@@ -600,6 +953,15 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> int:
     args = parse_args()
+    if args.diagnostic_log_every < 0:
+        raise ValueError("diagnostic log interval must be non-negative")
+    if args.body_facing_weight < 0:
+        raise ValueError("body facing weight must be non-negative")
+    if min(
+        args.max_fit_residual_mm, args.max_twist_deg, args.max_delta_deg,
+        args.max_facing_mismatch_deg,
+    ) < 0:
+        raise ValueError("fit safety thresholds must be non-negative")
     if not (args.smpl_dir / "smpl" / "SMPL_NEUTRAL.pkl").exists():
         print(
             f"SMPL model not found: {args.smpl_dir / 'smpl' / 'SMPL_NEUTRAL.pkl'}",
@@ -619,7 +981,13 @@ def main() -> int:
         args.fit_jsonl.parent.mkdir(parents=True, exist_ok=True)
         fit_stream = args.fit_jsonl.open("a", encoding="utf-8")
         print(f"[bridge] fit diagnostics={args.fit_jsonl}")
-    received = sent = dropped = raw_sent = raw_dropped = 0
+    if args.mesh_preview_json is not None:
+        args.mesh_preview_json.parent.mkdir(parents=True, exist_ok=True)
+        print(
+            f"[bridge] mesh preview={args.mesh_preview_json} "
+            f"faces={args.mesh_preview_faces}"
+        )
+    received = sent = held = dropped = raw_sent = raw_dropped = 0
     try:
         for record in iter_json_records(args.input):
             received += 1
@@ -641,12 +1009,63 @@ def main() -> int:
                 if fit_stream is not None and bridge.last_fit_record is not None:
                     fit_stream.write(json.dumps(bridge.last_fit_record, allow_nan=False) + "\n")
                     fit_stream.flush()
+                if args.mesh_preview_json is not None and bridge.last_mesh_record is not None:
+                    write_json_atomic(args.mesh_preview_json, bridge.last_mesh_record)
                 sent += 1
+                if (
+                    args.diagnostic_log_every > 0
+                    and (sent == 1 or sent % args.diagnostic_log_every == 0)
+                    and bridge.last_fit_record is not None
+                ):
+                    fit = bridge.last_fit_record
+                    pose_diagnostic = fit["pose_diagnostics"]
+                    diagnostic_log = {
+                        "schema": "smpl-0901.distortion-log/v1",
+                        "frame": fit["frame"],
+                        "timestamp_ns": fit["timestamp_ns"],
+                        "accepted": True,
+                        "action": "send",
+                        "reasons": [],
+                        "fit_residual_mm": fit["fit_residual_mm"],
+                        "torso_orientation_deg": fit["torso_orientation_deg"],
+                        "fit_elapsed_ms": fit["fit_elapsed_ms"],
+                        "fit_iterations": fit["fit_iterations"],
+                        "body_facing_mismatch_deg": fit["body_facing_mismatch_deg"],
+                        "worst_target_joint": fit["worst_target_joint"],
+                        "worst_rotation": pose_diagnostic["worst_rotation"],
+                        "worst_twist": pose_diagnostic["worst_twist"],
+                        "worst_delta": pose_diagnostic["worst_delta"],
+                        "warning_joints": pose_diagnostic["warning_joints"],
+                    }
+                    print(
+                        "[bridge] distortion "
+                        + json.dumps(diagnostic_log, allow_nan=False, separators=(",", ":")),
+                        flush=True,
+                    )
                 if sent == 1 or sent % 30 == 0:
-                    print(f"[bridge] received={received} sent={sent} raw_sent={raw_sent} raw_dropped={raw_dropped} dropped={dropped} residual={residual:.1f} mm")
+                    fit_ms = float(bridge.last_fit_record["fit_elapsed_ms"])
+                    fit_fps = 1000.0 / fit_ms if fit_ms > 0 else 0.0
+                    print(
+                        f"[bridge] received={received} sent={sent} raw_sent={raw_sent} "
+                        f"raw_dropped={raw_dropped} held={held} dropped={dropped} "
+                        f"residual={residual:.1f} mm fit_ms={fit_ms:.1f} "
+                        f"fit_fps={fit_fps:.2f}"
+                    )
             except CalibrationPending as error:
                 # Expected during the initial fixed-beta calibration window.
                 print(f"[bridge] {error}")
+            except UnsafeFit as error:
+                held += 1
+                if fit_stream is not None and bridge.last_fit_record is not None:
+                    fit_stream.write(json.dumps(bridge.last_fit_record, allow_nan=False) + "\n")
+                    fit_stream.flush()
+                if args.mesh_preview_json is not None and bridge.last_mesh_record is not None:
+                    write_json_atomic(args.mesh_preview_json, bridge.last_mesh_record)
+                print(
+                    "[bridge] distortion "
+                    + json.dumps(error.diagnostic, allow_nan=False, separators=(",", ":")),
+                    flush=True,
+                )
             except (ValueError, KeyError, TypeError) as error:
                 dropped += 1
                 print(f"[bridge] drop frame {received - 1}: {error}", file=sys.stderr)
