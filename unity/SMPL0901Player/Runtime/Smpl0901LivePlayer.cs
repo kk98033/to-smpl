@@ -40,6 +40,7 @@ namespace SMPL0901Player.Runtime
         public Smpl0901TrackingPanel trackingPanel;
         public Smpl0901FittedSkeletonRenderer fittedSkeleton;
         public Rsv1RawSkeletonRenderer rawSkeleton;
+        public Smpl0901DirectJointBaseline directJointBaseline;
 
         public bool IsListening { get; private set; }
         public bool IsRuntimeReady => runtimeCharacter != null && bones != null;
@@ -59,6 +60,30 @@ namespace SMPL0901Player.Runtime
         public Transform[] RuntimeBones => bones;
         public Transform RuntimePelvis => pelvisBone;
         public string BindingStatus { get; private set; } = "not built";
+        public bool BoneDebugMode { get; private set; }
+        public bool DebugUseReceivedRotation { get; private set; }
+        public bool DebugApplyReceivedThroughSelected { get; private set; }
+        public int DebugBoneIndex { get; private set; }
+        public Vector3 DebugBoneEuler { get; private set; }
+        public string DebugBoneName
+        {
+            get
+            {
+                Transform bone = GetBodyBone(DebugBoneIndex);
+                return bone != null ? bone.name : "unmapped";
+            }
+        }
+        public Vector3 DebugReceivedRotvec
+        {
+            get
+            {
+                if (latestPose == null || latestPose.Length < (DebugBoneIndex + 1) * 3)
+                    return Vector3.zero;
+                int offset = DebugBoneIndex * 3;
+                return new Vector3(latestPose[offset], latestPose[offset + 1], latestPose[offset + 2]);
+            }
+        }
+        public float DebugReceivedAngleDeg => DebugReceivedRotvec.magnitude * Mathf.Rad2Deg;
 
         private readonly object frameLock = new object();
         private ProtocolV2Frame pendingFrame;
@@ -72,6 +97,7 @@ namespace SMPL0901Player.Runtime
         private Vector3[] bindLocalPositions;
         private Transform pelvisBone;
         private int[] bodyBoneIndices;
+        private float[] latestPose;
         private UdpClient udpClient;
         private Thread receiveThread;
         private volatile bool receiverRunning;
@@ -104,6 +130,8 @@ namespace SMPL0901Player.Runtime
             if (fittedSkeleton == null)
                 fittedSkeleton = GetOrAdd<Smpl0901FittedSkeletonRenderer>();
             if (rawSkeleton == null) rawSkeleton = GetOrAdd<Rsv1RawSkeletonRenderer>();
+            if (directJointBaseline == null)
+                directJointBaseline = GetOrAdd<Smpl0901DirectJointBaseline>();
 
             rootMotion.runtimeRoot = transform;
             rootMotion.SetDisplayEuler(rootMotion.displayEuler);
@@ -111,7 +139,10 @@ namespace SMPL0901Player.Runtime
             trackingPanel.player = this;
             trackingPanel.fittedSkeleton = fittedSkeleton;
             trackingPanel.rawSkeleton = rawSkeleton;
+            trackingPanel.directJointBaseline = directJointBaseline;
             rawSkeleton.player = this;
+            directJointBaseline.player = this;
+            directJointBaseline.rawSkeleton = rawSkeleton;
             if (string.IsNullOrWhiteSpace(rawSkeleton.allowedServerIp))
                 rawSkeleton.allowedServerIp = allowedServerIp;
         }
@@ -303,6 +334,61 @@ namespace SMPL0901Player.Runtime
             }
         }
 
+        public void SetBoneDebugMode(bool enabled)
+        {
+            BoneDebugMode = enabled;
+            if (enabled)
+            {
+                if (livePoseRoot != null)
+                    livePoseRoot.localRotation = Quaternion.Euler(livePoseEuler);
+                ApplyIsolatedBoneDebugPose();
+            }
+            else if (latestPose != null)
+            {
+                if (livePoseRoot != null)
+                    livePoseRoot.localRotation = Quaternion.Euler(livePoseEuler);
+                ApplyBodyPose(latestPose);
+            }
+            else
+            {
+                ShowTPose();
+            }
+        }
+
+        public void StepDebugBone(int delta)
+        {
+            DebugBoneIndex = (DebugBoneIndex + delta) % 22;
+            if (DebugBoneIndex < 0) DebugBoneIndex += 22;
+            DebugBoneEuler = Vector3.zero;
+            ApplyIsolatedBoneDebugPose();
+        }
+
+        public void SetDebugBoneEuler(Vector3 value)
+        {
+            DebugBoneEuler = value;
+            ApplyIsolatedBoneDebugPose();
+        }
+
+        public void SetDebugUseReceivedRotation(bool value)
+        {
+            DebugUseReceivedRotation = value;
+            ApplyIsolatedBoneDebugPose();
+        }
+
+        public void SetDebugApplyReceivedThroughSelected(bool value)
+        {
+            DebugApplyReceivedThroughSelected = value;
+            ApplyIsolatedBoneDebugPose();
+        }
+
+        public void ResetDebugBoneRotation()
+        {
+            DebugBoneEuler = Vector3.zero;
+            DebugUseReceivedRotation = false;
+            DebugApplyReceivedThroughSelected = false;
+            ApplyIsolatedBoneDebugPose();
+        }
+
         public void ShowTPose()
         {
             if (bones == null || bindLocalRotations == null || bindLocalPositions == null)
@@ -447,6 +533,13 @@ namespace SMPL0901Player.Runtime
                 return;
             }
 
+            latestPose = (float[])frame.body.pose.Clone();
+            if (BoneDebugMode)
+            {
+                ApplyIsolatedBoneDebugPose();
+                return;
+            }
+
             // This is a whole-pose coordinate correction. Keeping it on the
             // instantiated character root prevents it from contaminating the
             // SMPL pelvis/local skinning rotations.
@@ -501,6 +594,67 @@ namespace SMPL0901Player.Runtime
                     new Vector3(x, y, z) / radians);
                 bone.localRotation *= axisAngle.ToLeftHanded();
             }
+        }
+
+        private Transform GetBodyBone(int poseIndex)
+        {
+            if (bones == null || bodyBoneIndices == null ||
+                poseIndex < 0 || poseIndex >= bodyBoneIndices.Length)
+                return null;
+            int boneIndex = bodyBoneIndices[poseIndex];
+            return boneIndex >= 0 && boneIndex < bones.Length ? bones[boneIndex] : null;
+        }
+
+        private void ApplyIsolatedBoneDebugPose()
+        {
+            if (!IsRuntimeReady || bodyBoneIndices == null) return;
+            if (livePoseRoot != null)
+                livePoseRoot.localRotation = Quaternion.Euler(livePoseEuler);
+
+            for (int poseIndex = 0; poseIndex < bodyBoneIndices.Length; poseIndex++)
+            {
+                Transform bone = GetBodyBone(poseIndex);
+                if (bone == null) continue;
+                bone.localRotation = poseIndex == 0
+                    ? Quaternion.Euler(supRigPelvisEuler)
+                    : Quaternion.identity;
+                int boneIndex = bodyBoneIndices[poseIndex];
+                if (poseIndex == 0 && bindLocalPositions != null && boneIndex < bindLocalPositions.Length)
+                    bone.localPosition = bindLocalPositions[boneIndex] + pelvisLocalOffset;
+            }
+            if (handRetargeter != null) handRetargeter.ResetToBindPose();
+
+            if (DebugApplyReceivedThroughSelected && latestPose != null)
+            {
+                // SMPL body indices are parent-before-child. Applying the
+                // received prefix progressively reveals the first joint whose
+                // local rotation makes the combined hierarchy diverge.
+                for (int poseIndex = 0; poseIndex <= DebugBoneIndex; poseIndex++)
+                {
+                    Transform bone = GetBodyBone(poseIndex);
+                    if (bone != null) bone.localRotation *= RotationFromPose(latestPose, poseIndex);
+                }
+                return;
+            }
+
+            Transform selected = GetBodyBone(DebugBoneIndex);
+            if (selected == null) return;
+            Quaternion testRotation = DebugUseReceivedRotation && latestPose != null
+                ? RotationFromPose(latestPose, DebugBoneIndex)
+                : Quaternion.Euler(DebugBoneEuler);
+            selected.localRotation *= testRotation;
+        }
+
+        private static Quaternion RotationFromPose(float[] pose, int poseIndex)
+        {
+            int offset = poseIndex * 3;
+            if (pose == null || offset < 0 || offset + 2 >= pose.Length)
+                return Quaternion.identity;
+            Vector3 rotvec = new Vector3(pose[offset], pose[offset + 1], pose[offset + 2]);
+            float radians = rotvec.magnitude;
+            return radians > 1e-6f
+                ? Quaternion.AngleAxis(radians * Mathf.Rad2Deg, rotvec / radians).ToLeftHanded()
+                : Quaternion.identity;
         }
 
         private void OnDisable()

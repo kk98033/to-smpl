@@ -67,6 +67,7 @@ namespace SMPL0901Player.Runtime
         public float SecondsSinceLastPacket => lastPacketRealtime < 0f
             ? float.PositiveInfinity
             : Time.realtimeSinceStartup - lastPacketRealtime;
+        public bool HasRenderableFrame => latestPelvisRelativePoints != null;
 
         private static readonly Vector2Int[] Connections = BuildConnections();
         private readonly object frameLock = new object();
@@ -89,6 +90,25 @@ namespace SMPL0901Player.Runtime
         private LineRenderer[] boneLines;
         private Material bodyMaterial;
         private Material handMaterial;
+        private Vector3[] latestPelvisRelativePoints;
+        private bool[] latestPointValidity;
+        private int latestPoseRevision;
+
+        /// <summary>
+        /// Returns the latest body/hand points after the exact same unit, axis,
+        /// whole-pose rotation and pelvis-centering conversion used by the raw
+        /// renderer. The arrays are replaced (not mutated) on every new frame,
+        /// so consumers on Unity's main thread may safely keep the references
+        /// until the next call.
+        /// </summary>
+        public bool TryGetLatestPelvisRelativePose(
+            out Vector3[] points, out bool[] valid, out int revision)
+        {
+            points = latestPelvisRelativePoints;
+            valid = latestPointValidity;
+            revision = latestPoseRevision;
+            return points != null && valid != null;
+        }
 
         private void Start()
         {
@@ -422,6 +442,9 @@ namespace SMPL0901Player.Runtime
             Vector3 pelvis = (positions[11] + positions[12]) * 0.5f;
             for (int index = 0; index < positions.Length; index++)
                 positions[index] -= pelvis;
+            latestPelvisRelativePoints = positions;
+            latestPointValidity = valid;
+            latestPoseRevision++;
             RenderPositions(positions, valid);
         }
 

@@ -51,6 +51,8 @@ namespace SMPL0901Player.Editor
             Smpl0901FittedSkeletonRenderer fitted =
                 GetOrAdd<Smpl0901FittedSkeletonRenderer>(target);
             Rsv1RawSkeletonRenderer raw = GetOrAdd<Rsv1RawSkeletonRenderer>(target);
+            Smpl0901DirectJointBaseline baseline =
+                GetOrAdd<Smpl0901DirectJointBaseline>(target);
 
             player.listenPort = 9095;
             player.listenOnStart = false;
@@ -64,6 +66,7 @@ namespace SMPL0901Player.Editor
             player.trackingPanel = panel;
             player.fittedSkeleton = fitted;
             player.rawSkeleton = raw;
+            player.directJointBaseline = baseline;
             root.runtimeRoot = target.transform;
             root.useSmplCoordinateConversion = false;
             root.displayEuler = new Vector3(0f, 180f, 0f);
@@ -77,6 +80,7 @@ namespace SMPL0901Player.Editor
             panel.player = player;
             panel.fittedSkeleton = fitted;
             panel.rawSkeleton = raw;
+            panel.directJointBaseline = baseline;
             fitted.player = player;
             fitted.renderFittedSkeleton = false;
             raw.listenPort = 9096;
@@ -93,9 +97,14 @@ namespace SMPL0901Player.Editor
             raw.followSmplPelvis = true;
             raw.alignmentOffset = Vector3.zero;
             raw.renderRawSkeleton = true;
+            baseline.player = player;
+            baseline.rawSkeleton = raw;
+            baseline.renderBaseline = true;
+            baseline.baselineOffset = new Vector3(2f, 0f, 0f);
+            baseline.autoScaleToRaw = true;
             panel.visible = true;
             panel.showDebugDetails = false;
-            panel.panelSize = new Vector2(690f, 580f);
+            panel.panelSize = new Vector2(690f, 614f);
 
             if (player.characterPrefab == null)
                 player.characterPrefab = FindSupCharacterPrefab();
@@ -110,6 +119,7 @@ namespace SMPL0901Player.Editor
             EditorUtility.SetDirty(panel);
             EditorUtility.SetDirty(fitted);
             EditorUtility.SetDirty(raw);
+            EditorUtility.SetDirty(baseline);
             EditorSceneManager.MarkSceneDirty(
                 UnityEngine.SceneManagement.SceneManager.GetActiveScene());
             Selection.activeGameObject = target;

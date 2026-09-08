@@ -10,6 +10,7 @@ namespace SMPL0901Player.Runtime
         public Smpl0901LivePlayer player;
         public Rsv1RawSkeletonRenderer rawSkeleton;
         public Smpl0901FittedSkeletonRenderer fittedSkeleton;
+        public Smpl0901DirectJointBaseline directJointBaseline;
         public bool visible = true;
         public bool showDebugDetails = false;
         public Vector2 screenPosition = new Vector2(15f, 15f);
@@ -38,6 +39,8 @@ namespace SMPL0901Player.Runtime
             if (rawSkeleton == null) rawSkeleton = GetComponent<Rsv1RawSkeletonRenderer>();
             if (fittedSkeleton == null)
                 fittedSkeleton = GetComponent<Smpl0901FittedSkeletonRenderer>();
+            if (directJointBaseline == null)
+                directJointBaseline = GetComponent<Smpl0901DirectJointBaseline>();
             if (serverIpText == null)
                 serverIpText = player != null ? player.allowedServerIp : string.Empty;
             if (smv2PortText == null && player != null)
@@ -47,7 +50,7 @@ namespace SMPL0901Player.Runtime
             if (localIpv4Text == null) localIpv4Text = FindLocalIpv4Addresses();
 
             float width = Mathf.Max(690f, panelSize.x);
-            float height = showDebugDetails ? Mathf.Max(580f, panelSize.y) : 270f;
+            float height = showDebugDetails ? Mathf.Max(614f, panelSize.y) : 304f;
             Rect panel = new Rect(screenPosition.x, screenPosition.y, width, height);
             GUI.Box(panel, "SMPL 0901 Live Player");
 
@@ -113,6 +116,7 @@ namespace SMPL0901Player.Runtime
                     rawSkeleton.StopListening();
                     rawSkeleton.ShowPreviewTPose();
                 }
+                if (directJointBaseline != null) directJointBaseline.ShowBindPose();
                 latest = null;
             }
             if (GUI.Button(new Rect(panel.x + 286, buttonY, 140, 26), "Reset Root Anchor") &&
@@ -121,6 +125,14 @@ namespace SMPL0901Player.Runtime
             if (GUI.Button(new Rect(panel.x + 437, buttonY, 120, 26), "Accept Any IP"))
             {
                 serverIpText = string.Empty;
+            }
+            if (directJointBaseline != null)
+            {
+                bool showBaseline = GUI.Toggle(
+                    new Rect(panel.x + 568, buttonY, 112, 26),
+                    directJointBaseline.renderBaseline, "XYZ Baseline");
+                if (showBaseline != directJointBaseline.renderBaseline)
+                    directJointBaseline.SetVisible(showBaseline);
             }
 
             float placementY = buttonY + 34f;
@@ -153,7 +165,22 @@ namespace SMPL0901Player.Runtime
                     rawSkeleton.ResetAlignmentOffset();
             }
 
-            float rotationY = rawPlacementY + 34f;
+            float baselinePlacementY = rawPlacementY + 34f;
+            GUI.Label(new Rect(panel.x + 14, baselinePlacementY, 72, 24), "Base Offset");
+            if (directJointBaseline != null)
+            {
+                Vector3 baselineOffset = directJointBaseline.baselineOffset;
+                Vector3 adjustedBaseline = new Vector3(
+                    DrawOffsetSlider(new Rect(panel.x + 84, baselinePlacementY, 145, 24), "X", baselineOffset.x),
+                    DrawOffsetSlider(new Rect(panel.x + 238, baselinePlacementY, 145, 24), "Y", baselineOffset.y),
+                    DrawOffsetSlider(new Rect(panel.x + 392, baselinePlacementY, 145, 24), "Z", baselineOffset.z));
+                if ((adjustedBaseline - baselineOffset).sqrMagnitude > 1e-8f)
+                    directJointBaseline.SetBaselineOffset(adjustedBaseline);
+                if (GUI.Button(new Rect(panel.x + 548, baselinePlacementY - 1f, 126, 25), "Reset Baseline"))
+                    directJointBaseline.ResetBaselineOffset();
+            }
+
+            float rotationY = baselinePlacementY + 34f;
             GUI.Label(new Rect(panel.x + 14, rotationY, 72, 24), "Live Pose Rot");
             if (player != null && rawSkeleton != null)
             {
@@ -243,6 +270,79 @@ namespace SMPL0901Player.Runtime
             GUI.Label(
                 new Rect(panel.x + 14, panel.y + panel.height - 62f, panel.width - 28, 52f),
                 debug, labelStyle);
+            DrawBoneDebugPanel(panel);
+        }
+
+        private void DrawBoneDebugPanel(Rect parentPanel)
+        {
+            if (player == null) return;
+            Rect panel = new Rect(
+                parentPanel.x, parentPanel.y + parentPanel.height + 8f,
+                parentPanel.width, 218f);
+            GUI.Box(panel, "SMPL Bone Isolation Debug");
+
+            bool enabled = GUI.Toggle(
+                new Rect(panel.x + 14, panel.y + 27f, 260f, 24f),
+                player.BoneDebugMode,
+                "Isolate one body bone (pause full pose)");
+            if (enabled != player.BoneDebugMode)
+                player.SetBoneDebugMode(enabled);
+            if (!player.BoneDebugMode)
+            {
+                GUI.Label(
+                    new Rect(panel.x + 285f, panel.y + 27f, 385f, 24f),
+                    "Enable this to test the SUP rig one joint at a time.");
+                return;
+            }
+
+            float jointY = panel.y + 57f;
+            if (GUI.Button(new Rect(panel.x + 14f, jointY, 80f, 26f), "< Prev"))
+                player.StepDebugBone(-1);
+            GUI.Label(
+                new Rect(panel.x + 105f, jointY + 2f, 310f, 24f),
+                $"Joint {player.DebugBoneIndex:D2}: {player.DebugBoneName}", labelStyle);
+            if (GUI.Button(new Rect(panel.x + 425f, jointY, 80f, 26f), "Next >"))
+                player.StepDebugBone(1);
+
+            Vector3 received = player.DebugReceivedRotvec;
+            GUI.Label(
+                new Rect(panel.x + 14f, panel.y + 88f, 655f, 24f),
+                $"Latest server rotvec rad: ({received.x:F3}, {received.y:F3}, {received.z:F3})  " +
+                $"magnitude: {player.DebugReceivedAngleDeg:F1} deg");
+
+            bool useReceived = GUI.Toggle(
+                new Rect(panel.x + 14f, panel.y + 116f, 300f, 24f),
+                player.DebugUseReceivedRotation,
+                "Use latest received rotvec for this bone");
+            if (useReceived != player.DebugUseReceivedRotation)
+                player.SetDebugUseReceivedRotation(useReceived);
+            bool usePrefix = GUI.Toggle(
+                new Rect(panel.x + 335f, panel.y + 116f, 335f, 24f),
+                player.DebugApplyReceivedThroughSelected,
+                "Apply received joints 0..selected");
+            if (usePrefix != player.DebugApplyReceivedThroughSelected)
+                player.SetDebugApplyReceivedThroughSelected(usePrefix);
+
+            float rotationY = panel.y + 145f;
+            GUI.Label(new Rect(panel.x + 14f, rotationY, 72f, 24f), "Manual Rot");
+            Vector3 current = player.DebugBoneEuler;
+            Vector3 adjusted = new Vector3(
+                DrawDebugAngleSlider(new Rect(panel.x + 84f, rotationY, 145f, 24f), "X", current.x),
+                DrawDebugAngleSlider(new Rect(panel.x + 238f, rotationY, 145f, 24f), "Y", current.y),
+                DrawDebugAngleSlider(new Rect(panel.x + 392f, rotationY, 145f, 24f), "Z", current.z));
+            if (!player.DebugUseReceivedRotation &&
+                !player.DebugApplyReceivedThroughSelected &&
+                (adjusted - current).sqrMagnitude > 1e-6f)
+                player.SetDebugBoneEuler(adjusted);
+
+            if (GUI.Button(
+                    new Rect(panel.x + 548f, rotationY - 1f, 126f, 25f),
+                    "Reset Joint"))
+                player.ResetDebugBoneRotation();
+
+            GUI.Label(
+                new Rect(panel.x + 14f, panel.y + 180f, 660f, 28f),
+                "Use 0..selected and press Next: the first step that distorts identifies the failing joint/parent chain.");
         }
 
         private static float DrawOffsetSlider(Rect rect, string axis, float value)
@@ -259,6 +359,15 @@ namespace SMPL0901Player.Runtime
             GUI.Label(new Rect(rect.x, rect.y, 18f, rect.height), axis);
             float result = GUI.HorizontalSlider(
                 new Rect(rect.x + 18f, rect.y + 6f, 82f, 16f), value, -180f, 180f);
+            GUI.Label(new Rect(rect.x + 104f, rect.y, 45f, rect.height), result.ToString("F0"));
+            return result;
+        }
+
+        private static float DrawDebugAngleSlider(Rect rect, string axis, float value)
+        {
+            GUI.Label(new Rect(rect.x, rect.y, 18f, rect.height), axis);
+            float result = GUI.HorizontalSlider(
+                new Rect(rect.x + 18f, rect.y + 6f, 82f, 16f), value, -60f, 60f);
             GUI.Label(new Rect(rect.x + 104f, rect.y, 45f, rect.height), result.ToString("F0"));
             return result;
         }
