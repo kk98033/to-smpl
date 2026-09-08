@@ -165,6 +165,35 @@ elif packet[:4] == b"RSV1":
 
 接收 socket 應分別 bind <code>0.0.0.0:9095</code> 與 <code>0.0.0.0:9096</code>，並先檢查 datagram 長度與 magic。Unity/C# 請以 little-endian 逐欄讀取，不要依賴 C# struct 的預設 alignment。
 
+## 4.1 Bridge 擬合診斷 JSONL（檔案介面）
+
+`--fit-jsonl PATH` 是供 Dashboard／分析工具使用的本機 append-only JSONL，不是另一個 UDP port。每筆 `smpl-0901.fit/v1` 都來自同一個輸入 frame：
+
+~~~json
+{
+  "schema": "smpl-0901.fit/v1",
+  "frame": 1054,
+  "timestamp_ns": 1725150000123456789,
+  "units": "m",
+  "coordinate_frame": "smpl_axes_pelvis_relative",
+  "axis_map": "x,-y,z",
+  "fit_profile": "upper-body",
+  "solver": {"endpoint_weight": 0.5, "torso_weight": 0.05, "temporal_weight": 0.01, "robust_huber": false},
+  "selected_body25_joints": [0,1,2,3,4,5,6,7,8,9,12],
+  "target_factory59": [[0.0,0.0,0.0]],
+  "target_body25": [[0.0,0.0,0.0]],
+  "fitted_body25": [[0.0,0.0,0.0]],
+  "fitted_smpl24": [[0.0,0.0,0.0]],
+  "joint_residual_mm": [12.3],
+  "fit_residual_mm": 31.2,
+  "worst_joint_residual_mm": 66.4,
+  "torso_orientation_deg": 2.1,
+  "fixed_betas": [0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0]
+}
+~~~
+
+實際陣列長度分別是 `59/25/25/24/25/10`。`joint_residual_mm` 中未參與目前 profile 的 Body25 關節為 JSON `null`。Dashboard 的橘色骨架來自 SMPL mesh 經同一 Body25 regressor 得到的 `fitted_body25`，並只顯示目前 profile 實際選取的關節；MPJPE 直接使用 `fit_residual_mm`，不會在瀏覽器內重新擬造骨架。
+
 ## 5. CLI contract
 
 | 參數 | 預設 | 說明 |
@@ -178,13 +207,16 @@ elif packet[:4] == b"RSV1":
 | <code>--raw-skeleton-port</code> | 9096 | 設為 0 可停用 RSV1 |
 | <code>--smpl-dir</code> | package models | 模型根目錄 |
 | <code>--device</code> | cuda | PyTorch device |
-| <code>--calibration-frames</code> | 10 | fixed-beta 起始校正幀數 |
+| <code>--calibration-frames</code> | 30 | fixed-beta 起始校正幀數 |
 | <code>--calibration-iterations</code> | 100 | 體型校正迭代數 |
 | <code>--iterations</code> | 100 | 每幀擬合迭代數 |
-| <code>--endpoint-weight</code> | 2.5 | 端點 loss 權重 |
-| <code>--torso-weight</code> | 1.5 | torso normal loss 權重 |
+| <code>--fit-profile</code> | full | `full` 使用 Body25 0..14；`upper-body` 使用 0..9,12，排除膝與腳踝並凍結腿部 rotation；Compose 預設 upper-body |
+| <code>--beta-limit</code> | 3.0 | 校正 betas 的絕對值上限；0 停用 |
+| <code>--fit-jsonl</code> | disabled | 寫出同幀實際 fitted joints 與 residual |
+| <code>--endpoint-weight</code> | 0.5 | 端點 loss 權重 |
+| <code>--torso-weight</code> | 0.05 | torso normal loss 權重 |
 | <code>--temporal-weight</code> | 0.01 | temporal smoothing 權重 |
 | <code>--robust-huber</code> | off | 啟用 Huber loss |
-| <code>--min-confidence</code> | 0.5 | 必要 Body17 點最低 confidence |
+| <code>--min-confidence</code> | 0.5 | 目前 fit profile 所選 Body25 點的最低 confidence |
 
 完整 CLI 說明可執行 <code>smpl-0901-bridge --help</code>。模型目錄必須包含 <code>smpl/SMPL_NEUTRAL.pkl</code> 與 <code>J_regressor_body25.npy</code>。<code>smpl-0901-send PATH --destination udp://HOST:9100 --fps 30</code> 可用 JSON/JSONL 做輸入重播測試。

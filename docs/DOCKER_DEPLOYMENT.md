@@ -134,6 +134,21 @@ sudo docker compose build --pull --no-cache
 sudo UNITY_HOST=192.168.200.1 docker compose up -d
 ~~~
 
+Compose 預設 `SMPL_FIT_PROFILE=upper-body`，適合下半身長期被機台遮擋的影片；膝／腳踝不參與 loss，腿部 rotation 保持上一幀。全身清楚可見時才切回：
+
+~~~bash
+sudo UNITY_HOST=192.168.200.1 SMPL_FIT_PROFILE=full \
+  docker compose up -d --force-recreate bridge
+~~~
+
+每個成功擬合 frame 會寫至 `artifacts/live/smpl_fit.jsonl`。若 Dashboard 位於相鄰的 `digital-twin-pose` repo，啟動時共用它的輸出目錄：
+
+~~~bash
+sudo UNITY_HOST=192.168.200.1 \
+  SMPL_OUTPUT_DIR=../digital-twin-pose/artifacts/live_v26 \
+  docker compose up -d --build --force-recreate bridge
+~~~
+
 ### Unity 與 Bridge 在同一台 Linux 主機
 
 ~~~bash
@@ -218,7 +233,7 @@ sudo docker compose logs -f bridge
 正常 log 順序：
 
 1. 顯示 input、Unity 與 Raw Skeleton 端點。
-2. 收到 Pipeline JSON 後顯示 <code>calibrating 1/10</code> 至完成。
+2. 收到 Pipeline JSON 後顯示 <code>calibrating 1/30</code> 至完成。
 3. 顯示 <code>calibration complete</code>。
 4. 定期顯示 <code>received</code>、<code>sent</code>、<code>raw_sent</code>、<code>raw_dropped</code>、<code>dropped</code> 與 residual。
 
@@ -226,7 +241,7 @@ sudo docker compose logs -f bridge
 
 - <code>received=0</code>：9100 尚未收到 Pipeline JSON。
 - <code>raw_sent</code> 增加：輸入 JSON 已解析，RSV1 已嘗試送出。
-- 只有 RSV1、沒有 SMV2：可能仍在前 10 幀校正，或該 frame 未通過 SMPL 品質閘門。
+- 只有 RSV1、沒有 SMV2：可能仍在前 30 個有效 frame 校正，或該 frame 未通過 SMPL 品質閘門。
 - UDP send 成功只表示資料交給 OS，不代表 Unity 已收到；最終仍應查看 Unity packet counter。
 
 ## 10. 常見問題

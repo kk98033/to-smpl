@@ -8,7 +8,7 @@
 
 ![工業數位分身即時姿態與 SMPL 系統架構](docs/digital-twin-system-architecture.svg)
 
-資料主路徑為：**三視角影像 → `dt-pose` → UDP 9100 JSON → `smpl-0901-bridge`**，Bridge 再平行輸出 **UDP 9095 SMV2（擬合結果）** 與 **UDP 9096 RSV1（原始 59 點骨架）**。Dashboard 是由 Pipeline artifacts 分出的唯讀觀測支線，不介入 SMPL 擬合。
+資料主路徑為：**三視角影像 → `dt-pose` → UDP 9100 JSON → `smpl-0901-bridge`**，Bridge 再平行輸出 **UDP 9095 SMV2（擬合結果）** 與 **UDP 9096 RSV1（原始 59 點骨架）**。Dashboard 是唯讀觀測支線：影像與原始 3D 骨架來自 Pipeline，橘色 SMPL 骨架與擬合誤差則讀取 Bridge 產生的同幀 `smpl_fit.jsonl`，不參與推論或擬合。
 
 ---
 
@@ -85,7 +85,8 @@ SMPL Bridge 是將 59 點 3D 骨架轉換為工業數位分身（SMPL Mesh）與
 | **`38..58`** (共 21 點) | **Right Hand 右手** | 38: 右手腕根部, 39-42: 拇指, 43-46: 食指, 47-50: 中指, 51-54: 無名指, 55-58: 小指 |
 
 #### 3. 擬合演算法 (Fixed Betas + Soft-Target Optimization)
-* **前 10 幀固定身形（Fixed Betas）**：收集前 10 幀估計出一組工人體型參數 $\beta$，後續全程鎖定骨長，消除動態估計時人體骨頭長度忽長忽短的抖動。
+* **前 30 個有效幀固定身形（Fixed Betas）**：收集有效姿態估計出一組工人體型參數 $\beta$，預設限制在 `[-3, 3]`，後續全程鎖定骨長，降低遮擋或離群點造成的極端體型與骨長抖動。
+* **可選擬合範圍**：`upper-body` 只以 Body25 `0..9,12`（頭、頸、雙臂、骨盆與左右髖）計算 loss，並凍結下肢 rotation；`full` 才使用 Body25 `0..14`。下半身長期被遮擋時，部署預設使用 `upper-body`。
 * **姿勢 Soft-Target 求解**：以骨盆為錨點，在 GPU 上進行 100 次梯度迭代（~31.9 ms / 31.3 FPS），求解出：
   * `global_orient`：人體朝向旋轉。
   * `body_pose`：23 個身體關節的局部旋轉四元數。
@@ -135,6 +136,8 @@ Unity 端接收到二進位封包後，透過混合骨架系統（Hybrid Player�
 ---
 
 ### 階段五：即時 2x2 監看儀表板 (Dashboard Observer)
+
+Dashboard 讀取 Pipeline 的 JPEG／原始 59 點 JSONL，並讀取 Bridge 的 `smpl_fit.jsonl`。只有收到 `smpl-0901.fit/v1` 時才畫橘色 SMPL 骨架；該骨架是 SMPL forward mesh 經 fitting 所用 Body25 regressor 得到的 `fitted_body25`，而且 upper-body 模式不顯示未最佳化的膝與腳踝；它不是瀏覽器用固定骨長重新拼出的近似骨架。畫面上的 MPJPE 也直接使用 Bridge 對同一 frame 計算的 `fit_residual_mm`。
 
 * **存取位址**：`http://127.0.0.1:8088/?token=...`
 * **畫面配置（2x2 網格零滾動設計）**：

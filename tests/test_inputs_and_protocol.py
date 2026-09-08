@@ -19,6 +19,8 @@ from smpl_0901.raw_skeleton_udp import (
 )
 from smpl_0901.service import (
     FACTORY_IDS,
+    FIT_PROFILES,
+    body25_confidence_from_factory59,
     body25_from_factory59,
     iter_json_records,
     parse_joint_frame,
@@ -142,6 +144,25 @@ class InputContractTests(unittest.TestCase):
         self.assertEqual(left.shape, (21, 3))
         self.assertEqual(right.shape, (21, 3))
         np.testing.assert_allclose(body[1], (points[5] + points[6]) * 0.5)
+
+    def test_upper_body_profile_stops_before_occluded_legs(self):
+        self.assertEqual(FIT_PROFILES["upper-body"], tuple(range(10)) + (12,))
+        self.assertIn(9, FIT_PROFILES["upper-body"])
+        self.assertIn(12, FIT_PROFILES["upper-body"])
+        self.assertNotIn(10, FIT_PROFILES["upper-body"])
+        self.assertNotIn(13, FIT_PROFILES["upper-body"])
+        self.assertIn(14, FIT_PROFILES["full"])
+
+    def test_body25_confidence_uses_weakest_joint_for_midpoints(self):
+        confidence = np.ones(59, dtype=np.float32)
+        confidence[5] = 0.8
+        confidence[6] = 0.3
+        confidence[11] = 0.2
+        confidence[12] = 0.9
+        mapped = body25_confidence_from_factory59(confidence)
+        self.assertAlmostEqual(float(mapped[1]), 0.3)
+        self.assertAlmostEqual(float(mapped[8]), 0.2)
+        self.assertAlmostEqual(float(mapped[5]), 0.8)
 
 
 class ProtocolTests(unittest.TestCase):

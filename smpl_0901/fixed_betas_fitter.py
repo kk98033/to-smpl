@@ -28,8 +28,9 @@ class FixedBetasFitResult:
     body_pose: torch.Tensor         # (B, 69) or (B, 23, 3)
     translation: torch.Tensor       # (B, 3)
     pred_body25: torch.Tensor       # (B, 25, 3)
+    pred_smpl24: torch.Tensor       # (B, 24, 3), native SMPL kinematic joints
     fixed_betas: torch.Tensor       # (10,) or (B, 10)
-    residual_mm: torch.Tensor       # (B,) Body15 MPJPE in mm
+    residual_mm: torch.Tensor       # (B,) selected weighted MPJPE in mm
     torso_orientation_deg: torch.Tensor # (B,) torso error in deg
     elapsed_seconds: float
     iterations: int
@@ -74,6 +75,7 @@ def estimate_fixed_betas(
     joint_indices: Sequence[int] = tuple(range(15)),
     pose_prior_weight: float = 0.001,
     beta_prior_weight: float = 0.001,
+    beta_limit: float = 3.0,
 ) -> torch.Tensor:
     """Estimate a single shared 10-D beta vector across calibration frames.
 
@@ -126,6 +128,11 @@ def estimate_fixed_betas(
         loss = joint_loss + pose_prior_weight * pose_prior + beta_prior_weight * beta_prior
         loss.backward()
         optimizer.step()
+        # Extreme shape coefficients usually mean that noisy/occluded joints
+        # are being absorbed as body shape. Keep calibration in a useful range.
+        if beta_limit > 0:
+            with torch.no_grad():
+                shared_betas.clamp_(-beta_limit, beta_limit)
 
     return shared_betas.squeeze(0).detach()
 
@@ -149,6 +156,8 @@ def fit_fixed_betas_soft_target(
     prev_body_pose: torch.Tensor | None = None,
     use_huber: bool = False,
     huber_delta: float = 0.05,
+    joint_weights: torch.Tensor | None = None,
+    frozen_pose_indices: Sequence[int] = (),
 ) -> FixedBetasFitResult:
     """Fit per-frame rotations with frozen betas and soft endpoint / torso constraints.
 
@@ -179,9 +188,25 @@ def fit_fixed_betas_soft_target(
 
     optimizer = torch.optim.Adam((root, body, translation), lr=learning_rate)
     selected = list(joint_indices)
+    if joint_weights is None:
+        selected_weights = torch.ones(
+            (batch_size, len(selected)), dtype=target_body25.dtype, device=device
+        )
+    else:
+        weights = joint_weights.to(device=device, dtype=target_body25.dtype)
+        if weights.ndim == 1:
+            weights = weights.unsqueeze(0).expand(batch_size, -1)
+        if tuple(weights.shape) != (batch_size, target_body25.shape[1]):
+            raise ValueError(
+                "joint_weights must have shape (B, J) or (J,), got "
+                f"{tuple(weights.shape)}"
+            )
+        selected_weights = weights[:, selected].clamp(0.0, 1.0)
+    weight_denominator = selected_weights.sum().clamp(min=1.0)
 
     # Endpoint indices (in Body25: 4=R_Wrist, 7=L_Wrist, 11=R_Ankle, 14=L_Ankle)
     endpoints = [j for j in (4, 7, 11, 14) if j in selected]
+    endpoint_positions = [selected.index(j) for j in endpoints]
 
     target_torso_normal = compute_torso_normal(target_body25).detach()
 
@@ -201,18 +226,22 @@ def fit_fixed_betas_soft_target(
         diff = pred[:, selected] - target_body25[:, selected]
         if use_huber:
             dist = torch.linalg.norm(diff, dim=-1)
-            joint_loss = torch.where(
+            per_joint_loss = torch.where(
                 dist < huber_delta,
                 0.5 * dist.square(),
                 huber_delta * (dist - 0.5 * huber_delta),
-            ).sum(dim=-1).mean()
+            )
         else:
-            joint_loss = diff.square().sum(dim=-1).mean()
+            per_joint_loss = diff.square().sum(dim=-1)
+        joint_loss = (per_joint_loss * selected_weights).sum() / weight_denominator
 
         # Weighted endpoint loss (wrists and ankles)
         if endpoints and endpoint_weight > 0:
             end_diff = pred[:, endpoints] - target_body25[:, endpoints]
-            endpoint_loss = end_diff.square().sum(dim=-1).mean()
+            endpoint_weights = selected_weights[:, endpoint_positions]
+            endpoint_loss = (
+                end_diff.square().sum(dim=-1) * endpoint_weights
+            ).sum() / endpoint_weights.sum().clamp(min=1.0)
         else:
             endpoint_loss = torch.tensor(0.0, device=device)
 
@@ -241,6 +270,10 @@ def fit_fixed_betas_soft_target(
             + temporal_smooth_weight * temporal_loss
         )
         loss.backward()
+        if frozen_pose_indices and body.grad is not None:
+            for pose_index in frozen_pose_indices:
+                start = int(pose_index) * 3
+                body.grad[:, start:start + 3] = 0.0
         optimizer.step()
 
     if device.type == "cuda":
@@ -254,12 +287,16 @@ def fit_fixed_betas_soft_target(
             body_pose=body.view(batch_size, 23, 3),
         )
         pred = torch.einsum("bvc,jv->bjc", smpl.vertices, body25_regressor) + translation.unsqueeze(1)
+        pred_smpl24 = smpl.joints[:, :24] + translation.unsqueeze(1)
         pred_torso_normal = compute_torso_normal(pred)
 
-        # Body15 MPJPE (mm)
-        body15_idx = list(range(15))
-        diff_mm = torch.linalg.norm(pred[:, body15_idx] - target_body25[:, body15_idx], dim=-1) * 1000.0
-        residual_mm = diff_mm.mean(dim=-1)
+        # Weighted MPJPE for the active fit profile (mm)
+        diff_mm = torch.linalg.norm(
+            pred[:, selected] - target_body25[:, selected], dim=-1
+        ) * 1000.0
+        residual_mm = (diff_mm * selected_weights).sum(dim=-1) / (
+            selected_weights.sum(dim=-1).clamp(min=1.0)
+        )
 
         # Torso orientation error in degrees
         cos_sim = (pred_torso_normal * target_torso_normal).sum(dim=-1).clamp(-1.0, 1.0)
@@ -270,6 +307,7 @@ def fit_fixed_betas_soft_target(
         body_pose=body.detach(),
         translation=translation.detach(),
         pred_body25=pred.detach(),
+        pred_smpl24=pred_smpl24.detach(),
         fixed_betas=betas.detach(),
         residual_mm=residual_mm.detach(),
         torso_orientation_deg=torso_deg.detach(),

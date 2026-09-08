@@ -1,5 +1,5 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="1600" height="900" viewBox="0 0 1600 900" role="img" aria-labelledby="title desc">
-<title id="title">工業數位分身即時姿態與 SMPL 系統架構</title><desc id="desc">Fake Sender 影像進入 dt-pose，經 UDP 9100 JSON 傳到 to-smpl bridge；Bridge 平行輸出 UDP 9095 SMV2 擬合結果與 UDP 9096 RSV1 原始 59 點骨架。Dashboard 是唯讀觀測分支。</desc>
+<title id="title">工業數位分身即時姿態與 SMPL 系統架構</title><desc id="desc">Fake Sender 影像進入 dt-pose，經 UDP 9100 JSON 傳到 to-smpl bridge；Bridge 平行輸出 UDP 9095 SMV2 擬合結果與 UDP 9096 RSV1 原始 59 點骨架。Dashboard 唯讀顯示 Pipeline 預覽與 Bridge 真實擬合結果。</desc>
 <defs>
  <linearGradient id="bg" x2="1" y2="1"><stop stop-color="#07111f"/><stop offset="1" stop-color="#111827"/></linearGradient>
  <linearGradient id="blue" x2="1" y2="1"><stop stop-color="#12304c"/><stop offset="1" stop-color="#102337"/></linearGradient>
@@ -25,18 +25,19 @@
 
 <g transform="translate(835 150)"><rect class="card" width="390" height="450" rx="22" fill="url(#orange)" stroke="#fb923c" stroke-width="3"/><rect x="250" y="16" width="116" height="28" rx="14" fill="#fb923c"/><text x="308" y="35" text-anchor="middle" class="step" fill="#251207">TO-SMPL REPO</text><text x="24" y="35" class="step" fill="#fdba74">03 · SMPL BRIDGE</text><text x="24" y="72" class="head">smpl-0901-bridge</text><text x="24" y="98" class="repo">to-smpl / PyTorch CUDA</text><path d="M24 119H366" stroke="#fb923c" opacity=".4"/>
 <rect x="24" y="142" width="342" height="58" rx="10" fill="#24150d"/><text x="42" y="168" class="body">UDP JSON receiver · drain stale frames</text><text x="42" y="189" class="small">bind 0.0.0.0:9100</text>
-<rect x="24" y="214" width="342" height="58" rx="10" fill="#24150d"/><text x="42" y="240" class="body">Input gate · Fixed Betas</text><text x="42" y="261" class="small">59-point body + hands</text>
-<rect x="24" y="286" width="342" height="70" rx="10" fill="#24150d"/><text x="42" y="314" class="body">Soft-target SMPL fitting</text><text x="42" y="338" class="small">pose · root motion · wrist-local hands</text>
+<rect x="24" y="214" width="342" height="58" rx="10" fill="#24150d"/><text x="42" y="240" class="body">Input gate · bounded Fixed Betas</text><text x="42" y="261" class="small">30 valid frames · beta ±3</text>
+<rect x="24" y="286" width="342" height="70" rx="10" fill="#24150d"/><text x="42" y="314" class="body">Upper-body / full SMPL fitting</text><text x="42" y="338" class="small">temporal · root · wrist-local hands</text>
 <rect x="24" y="370" width="342" height="54" rx="10" fill="#24150d"/><text x="42" y="393" class="body">SMV2 · UDP 9095 · 1389 B</text><text x="42" y="414" class="small">RSV1 raw 59pt · UDP 9096 · 1032 B</text></g>
 
 <g transform="translate(1290 225)"><rect class="card" width="260" height="300" rx="22" fill="url(#purple)" stroke="#a78bfa"/><text x="24" y="35" class="step" fill="#c4b5fd">04 · DIGITAL TWIN</text><text x="24" y="72" class="head">Unity Player</text><text x="24" y="98" class="repo">CustomSMPL / Hybrid</text><path d="M24 119H236" stroke="#a78bfa" opacity=".4"/><text x="24" y="158" class="body">SMV2 decoder · UDP 9095</text><text x="24" y="194" class="body">RSV1 receiver · UDP 9096</text><text x="24" y="230" class="body">24-joint SMPL + root</text><text x="24" y="266" class="body">Raw 59pt / Hand21</text></g>
 
-<g transform="translate(455 690)"><rect class="card" width="500" height="150" rx="22" fill="url(#blue)" stroke="#38bdf8"/><text x="24" y="34" class="step" fill="#7dd3fc">OBSERVABILITY BRANCH</text><text x="24" y="68" class="head">Optional legacy Dashboard · localhost:8088</text><text x="24" y="101" class="body">3 路 JPEG + 2D overlay · 59-point 3D skeleton</text><text x="24" y="127" class="small">唯讀 status.json / relative_3d.jsonl，不參與 SMPL 擬合</text></g>
+<g transform="translate(455 690)"><rect class="card" width="500" height="150" rx="22" fill="url(#blue)" stroke="#38bdf8"/><text x="24" y="34" class="step" fill="#7dd3fc">OBSERVABILITY BRANCH</text><text x="24" y="68" class="head">Optional live Dashboard · localhost:8088</text><text x="24" y="101" class="body">3 路 JPEG · raw 59pt · actual fitted Body25</text><text x="24" y="127" class="small">唯讀 Pipeline JSONL + Bridge smpl_fit.jsonl</text></g>
 
 <path d="M300 375H350" stroke="#60a5fa" stroke-width="4" fill="none" marker-end="url(#ab)"/><text x="325" y="343" text-anchor="middle" class="small">image + meta</text>
 <path d="M760 375H815" stroke="#34d399" stroke-width="4" fill="none" marker-end="url(#ag)"/><rect x="754" y="318" width="72" height="45" rx="9" fill="#0b1728" stroke="#34d399"/><text x="790" y="337" text-anchor="middle" class="port">UDP 9100</text><text x="790" y="355" text-anchor="middle" class="small">JSON v1</text>
 <path d="M1225 375H1270" stroke="#fb923c" stroke-width="4" fill="none" marker-end="url(#ao)"/><rect x="1208" y="318" width="80" height="45" rx="9" fill="#0b1728" stroke="#fb923c"/><text x="1248" y="337" text-anchor="middle" class="port">UDP 9095</text><text x="1248" y="355" text-anchor="middle" class="small">SMV2</text>
 <path d="M1225 445H1270" stroke="#60a5fa" stroke-width="4" fill="none" marker-end="url(#ab)"/><rect x="1208" y="388" width="80" height="45" rx="9" fill="#0b1728" stroke="#60a5fa"/><text x="1248" y="407" text-anchor="middle" class="port">UDP 9096</text><text x="1248" y="425" text-anchor="middle" class="small">RSV1 59pt</text>
 <path d="M585 600V650Q585 670 605 670H705V686" stroke="#38bdf8" stroke-width="3" stroke-dasharray="8 7" fill="none" marker-end="url(#ab)"/><text x="635" y="649" class="small">JPEG · JSONL · status</text>
+<path d="M835 570V650Q835 670 815 670H790V686" stroke="#fb923c" stroke-width="3" stroke-dasharray="8 7" fill="none" marker-end="url(#ao)"/><text x="845" y="649" class="small">actual SMPL fit JSONL</text>
 <text x="1540" y="866" text-anchor="end" class="small">Digital Twin Pose · Architecture v4</text>
 </svg>

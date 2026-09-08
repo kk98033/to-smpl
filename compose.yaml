@@ -15,6 +15,9 @@ services:
         source: ${SMPL_MODELS_DIR:-./models}
         target: /models
         read_only: true
+      - type: bind
+        source: ${SMPL_OUTPUT_DIR:-./artifacts/live}
+        target: /output
     entrypoint:
       - /bin/sh
       - -ec
@@ -28,4 +31,10 @@ services:
           --unity-host "$${UNITY_HOST}" \
           --unity-port 9095 \
           --raw-skeleton-host "$${UNITY_HOST}" \
-          --raw-skeleton-port 9096
+          --raw-skeleton-port 9096 \
+          --fit-profile "${SMPL_FIT_PROFILE:-upper-body}" \
+          --calibration-frames "${SMPL_CALIBRATION_FRAMES:-30}" \
+          --beta-limit "${SMPL_BETA_LIMIT:-3.0}" \
+          --endpoint-weight "${SMPL_ENDPOINT_WEIGHT:-0.5}" \
+          --torso-weight "${SMPL_TORSO_WEIGHT:-0.05}" \
+          --fit-jsonl /output/smpl_fit.jsonl
