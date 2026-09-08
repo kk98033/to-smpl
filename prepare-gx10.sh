@@ -4,6 +4,7 @@ set -euo pipefail
 
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 models_dir="${SMPL_MODELS_DIR:-${script_dir}/models}"
+output_dir="${SMPL_OUTPUT_DIR:-${script_dir}/artifacts/live}"
 
 for path in "${models_dir}/J_regressor_body25.npy" "${models_dir}/smpl/SMPL_NEUTRAL.pkl"; do
     if [[ ! -f "${path}" ]]; then
@@ -13,6 +14,7 @@ for path in "${models_dir}/J_regressor_body25.npy" "${models_dir}/smpl/SMPL_NEUT
     fi
 done
 
+mkdir -p "${output_dir}"
 echo "[to-smpl] Building smpl-0901-bridge:gx10 image..."
 if [[ "${EUID}" -ne 0 ]] && ! docker info >/dev/null 2>&1; then
     sudo docker compose -f "${script_dir}/compose.yaml" build

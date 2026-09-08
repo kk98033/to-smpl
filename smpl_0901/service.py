@@ -44,6 +44,16 @@ RELEASE_ROOT = PACKAGE_DIR.parent
 
 FACTORY_IDS = tuple(range(17)) + tuple(range(91, 133))
 
+# Body25 0..14 covers nose, neck, arms, pelvis, hips, knees and ankles. In the
+# factory footage the lower body is often occluded, so the upper-body profile
+# keeps MidHip plus both hips (8, 9, 12), but excludes knees and ankles. Lower SMPL pose slots are frozen at their
+# previous value instead of chasing hallucinated knees and ankles.
+FIT_PROFILES = {
+    "full": tuple(range(15)),
+    "upper-body": tuple(range(10)) + (12,),
+}
+LOWER_BODY_SMPL_POSE_INDICES = (0, 1, 3, 4, 6, 7, 9, 10)
+
 
 @dataclass(frozen=True)
 class JointFrame:
@@ -200,6 +210,28 @@ def body25_from_factory59(points: np.ndarray) -> tuple[np.ndarray, np.ndarray, n
     return output, source[17:38].copy(), source[38:59].copy()
 
 
+def body25_confidence_from_factory59(confidence: np.ndarray) -> np.ndarray:
+    """Map factory COCO-17 confidence to the Body25 joints used by the fitter."""
+    source = np.asarray(confidence, dtype=np.float32).reshape(-1)
+    if source.shape != (59,):
+        raise ValueError(f"expected confidence [59], got {source.shape}")
+    body = source[:17]
+    output = np.zeros(25, dtype=np.float32)
+    output[0] = body[0]
+    output[1] = min(body[5], body[6])
+    output[2], output[3], output[4] = body[6], body[8], body[10]
+    output[5], output[6], output[7] = body[5], body[7], body[9]
+    output[8] = min(body[11], body[12])
+    output[9], output[10], output[11] = body[12], body[14], body[16]
+    output[12], output[13], output[14] = body[11], body[13], body[15]
+    return np.clip(output, 0.0, 1.0)
+
+
+def _json_points(points: np.ndarray) -> list[list[float] | None]:
+    values = np.asarray(points, dtype=np.float32)
+    return [row.tolist() if np.isfinite(row).all() else None for row in values]
+
+
 def iter_json_records(uri: str, *, max_datagram: int = 1 << 20) -> Iterator[dict]:
     """Yield records from sockets, stdin, main_predict JSON/JSONL, or NPZ."""
     if uri == "stdin://":
@@ -333,6 +365,7 @@ class Smpl0901Bridge:
         self.raw_destination = (
             args.raw_skeleton_host or args.unity_host, args.raw_skeleton_port
         ) if args.raw_skeleton_port else None
+        self.last_fit_record: dict[str, object] | None = None
 
     def close(self) -> None:
         self.sock.close()
@@ -344,6 +377,8 @@ class Smpl0901Bridge:
         self.fixed_betas = estimate_fixed_betas(
             self.smpl_layer, self.regressor, target,
             iterations=self.args.calibration_iterations,
+            joint_indices=FIT_PROFILES[self.args.fit_profile],
+            beta_limit=self.args.beta_limit,
         )
         print(f"[bridge] calibration complete; fixed betas={self.fixed_betas.cpu().numpy().round(3).tolist()}")
 
@@ -355,13 +390,16 @@ class Smpl0901Bridge:
         from .protocol_v2_udp import pack_protocol_v2_frame
 
         body25, left_hand, right_hand = body25_from_factory59(frame.joints)
-        body_conf = frame.confidence[:17]
-        required_coco = np.asarray((0, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16))
+        body25_conf = body25_confidence_from_factory59(frame.confidence)
+        selected = FIT_PROFILES[self.args.fit_profile]
         if (
-            not np.isfinite(body25[:15]).all()
-            or not np.all(body_conf[required_coco] >= self.args.min_confidence)
+            not np.isfinite(body25[list(selected)]).all()
+            or not np.all(body25_conf[list(selected)] >= self.args.min_confidence)
         ):
-            raise ValueError("body input is incomplete/non-finite; holding the last Unity pose")
+            raise ValueError(
+                f"{self.args.fit_profile} input is incomplete/non-finite; "
+                "holding the last Unity pose"
+            )
 
         pelvis_world = body25[8].copy()
         if self.pelvis_anchor is None:
@@ -391,11 +429,19 @@ class Smpl0901Bridge:
             init_body=self.prev_body,
             init_translation=self.prev_translation,
             iterations=self.args.iterations,
+            joint_indices=selected,
             endpoint_weight=self.args.endpoint_weight,
             torso_normal_weight=self.args.torso_weight,
             temporal_smooth_weight=self.args.temporal_weight,
             prev_body_pose=self.prev_body,
             use_huber=self.args.robust_huber,
+            joint_weights=self.torch.tensor(
+                body25_conf[None], dtype=self.torch.float32, device=self.device
+            ),
+            frozen_pose_indices=(
+                LOWER_BODY_SMPL_POSE_INDICES
+                if self.args.fit_profile == "upper-body" else ()
+            ),
         )
         self.prev_root = result.root_orient
         self.prev_body = result.body_pose
@@ -413,8 +459,14 @@ class Smpl0901Bridge:
         right_local, right_conf, right_ok = wrist_local_hand(
             right_hand, frame.confidence[38:59], side="right"
         )
-        residuals = np.linalg.norm(result.pred_body25[0, :15].cpu().numpy() - target_np[:15], axis=1) * 1000.0
-        residual = float(residuals.mean())
+        pred_body25 = result.pred_body25[0].cpu().numpy()
+        pred_smpl24 = result.pred_smpl24[0].cpu().numpy()
+        residuals = np.full(25, np.nan, dtype=np.float32)
+        residuals[list(selected)] = (
+            np.linalg.norm(pred_body25[list(selected)] - target_np[list(selected)], axis=1)
+            * 1000.0
+        )
+        residual = float(result.residual_mm[0].cpu())
         torso_deg = float(result.torso_orientation_deg[0].cpu())
         input_score = float(np.mean(frame.confidence))
         packet_frame = {
@@ -426,7 +478,7 @@ class Smpl0901Bridge:
                 "rootPosition": anchored_root.tolist(),
                 "pelvisWorld": pelvis_world.tolist(),
                 "rootRotation": Rotation.from_rotvec(root).as_quat().astype(np.float32).tolist(),
-                "rootConfidence": float(np.mean(body_conf)),
+                "rootConfidence": float(np.mean(body25_conf[list(selected)])),
                 "pose": pose.tolist(),
             },
             "hands": {
@@ -439,12 +491,40 @@ class Smpl0901Bridge:
                 "inputValid": True,
                 "inputScore": input_score,
                 "fitResidualMm": residual,
-                "worstJointResidualMm": float(residuals.max()),
+                "worstJointResidualMm": float(np.nanmax(residuals)),
                 "torsoOrientationDeg": torso_deg,
                 "solverState": "TRACKING" if residual < 50.0 and torso_deg < 10.0 else "RECOVERED",
                 "stepsUsed": self.args.iterations,
                 "reasons": [],
             },
+        }
+        factory59_relative = frame.joints - pelvis_world
+        self.last_fit_record = {
+            "schema": "smpl-0901.fit/v1",
+            "frame": frame.frame_id,
+            "timestamp_ns": frame.ptp_epoch_ns,
+            "units": "m",
+            "coordinate_frame": "smpl_axes_pelvis_relative",
+            "axis_map": self.args.axis_map,
+            "fit_profile": self.args.fit_profile,
+            "solver": {
+                "endpoint_weight": self.args.endpoint_weight,
+                "torso_weight": self.args.torso_weight,
+                "temporal_weight": self.args.temporal_weight,
+                "robust_huber": self.args.robust_huber,
+            },
+            "selected_body25_joints": list(selected),
+            "target_factory59": _json_points(factory59_relative),
+            "target_body25": _json_points(target_np),
+            "fitted_body25": _json_points(pred_body25),
+            "fitted_smpl24": _json_points(pred_smpl24),
+            "joint_residual_mm": [
+                None if not np.isfinite(value) else float(value) for value in residuals
+            ],
+            "fit_residual_mm": residual,
+            "worst_joint_residual_mm": float(np.nanmax(residuals)),
+            "torso_orientation_deg": torso_deg,
+            "fixed_betas": self.fixed_betas.cpu().numpy().tolist(),
         }
         return pack_protocol_v2_frame(packet_frame), residual
 
@@ -492,11 +572,23 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--smpl-dir", type=Path, default=default_smpl_dir())
     parser.add_argument("--device", default="cuda")
-    parser.add_argument("--calibration-frames", type=int, default=10)
+    parser.add_argument("--calibration-frames", type=int, default=30)
     parser.add_argument("--calibration-iterations", type=int, default=100)
     parser.add_argument("--iterations", type=int, default=100)
-    parser.add_argument("--endpoint-weight", type=float, default=2.5)
-    parser.add_argument("--torso-weight", type=float, default=1.5)
+    parser.add_argument(
+        "--fit-profile", choices=tuple(FIT_PROFILES), default="full",
+        help="full fits through ankles; upper-body ignores occluded legs and freezes their rotations",
+    )
+    parser.add_argument(
+        "--beta-limit", type=float, default=3.0,
+        help="absolute clamp for each calibrated SMPL shape coefficient; 0 disables",
+    )
+    parser.add_argument(
+        "--fit-jsonl", type=Path,
+        help="append same-frame raw, fitted Body25/SMPL24 joints and true residual diagnostics",
+    )
+    parser.add_argument("--endpoint-weight", type=float, default=0.5)
+    parser.add_argument("--torso-weight", type=float, default=0.05)
     parser.add_argument("--temporal-weight", type=float, default=0.01)
     parser.add_argument(
         "--robust-huber", action="store_true",
@@ -522,6 +614,11 @@ def main() -> int:
         if args.raw_skeleton_port else "[bridge] Raw skeleton=disabled"
     )
     bridge = Smpl0901Bridge(args)
+    fit_stream = None
+    if args.fit_jsonl is not None:
+        args.fit_jsonl.parent.mkdir(parents=True, exist_ok=True)
+        fit_stream = args.fit_jsonl.open("a", encoding="utf-8")
+        print(f"[bridge] fit diagnostics={args.fit_jsonl}")
     received = sent = dropped = raw_sent = raw_dropped = 0
     try:
         for record in iter_json_records(args.input):
@@ -541,6 +638,9 @@ def main() -> int:
                     )
                 packet, residual = bridge.process(frame)
                 bridge.send(packet)
+                if fit_stream is not None and bridge.last_fit_record is not None:
+                    fit_stream.write(json.dumps(bridge.last_fit_record, allow_nan=False) + "\n")
+                    fit_stream.flush()
                 sent += 1
                 if sent == 1 or sent % 30 == 0:
                     print(f"[bridge] received={received} sent={sent} raw_sent={raw_sent} raw_dropped={raw_dropped} dropped={dropped} residual={residual:.1f} mm")
@@ -553,6 +653,8 @@ def main() -> int:
     except KeyboardInterrupt:
         print("\n[bridge] stopped")
     finally:
+        if fit_stream is not None:
+            fit_stream.close()
         bridge.close()
     return 0
 
