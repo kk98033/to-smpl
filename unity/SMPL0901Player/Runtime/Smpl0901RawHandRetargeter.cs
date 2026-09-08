@@ -267,7 +267,8 @@ namespace SMPL0901Player.Runtime
                     currentBlend = 1f - Mathf.Exp(-Mathf.Max(0.01f, rotationSmoothing) * Time.deltaTime);
                 }
 
-                segment.bone.localRotation = Quaternion.Slerp(segment.bone.localRotation, targetRotation, currentBlend);
+                segment.bone.localRotation = Quaternion.Slerp(
+                    segment.bone.localRotation, targetRotation, currentBlend);
                 applied++;
             }
             return applied;

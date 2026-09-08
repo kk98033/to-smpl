@@ -11,8 +11,9 @@ namespace SMPL0901Player.Runtime
         public Rsv1RawSkeletonRenderer rawSkeleton;
         public Smpl0901FittedSkeletonRenderer fittedSkeleton;
         public bool visible = true;
+        public bool showDebugDetails = false;
         public Vector2 screenPosition = new Vector2(15f, 15f);
-        public Vector2 panelSize = new Vector2(500f, 390f);
+        public Vector2 panelSize = new Vector2(690f, 580f);
 
         private ProtocolV2Frame latest;
         private GUIStyle labelStyle;
@@ -45,8 +46,8 @@ namespace SMPL0901Player.Runtime
                 rsv1PortText = rawSkeleton.listenPort.ToString();
             if (localIpv4Text == null) localIpv4Text = FindLocalIpv4Addresses();
 
-            float width = Mathf.Max(580f, panelSize.x);
-            float height = Mathf.Max(445f, panelSize.y);
+            float width = Mathf.Max(690f, panelSize.x);
+            float height = showDebugDetails ? Mathf.Max(580f, panelSize.y) : 270f;
             Rect panel = new Rect(screenPosition.x, screenPosition.y, width, height);
             GUI.Box(panel, "SMPL 0901 Live Player");
 
@@ -75,6 +76,9 @@ namespace SMPL0901Player.Runtime
                     rawSkeleton.renderRawSkeleton, "Show Raw 59pt Skeleton");
                 if (showRaw != rawSkeleton.renderRawSkeleton) rawSkeleton.SetVisible(showRaw);
             }
+            showDebugDetails = GUI.Toggle(
+                new Rect(panel.x + 580, toggleY, 100, 24),
+                showDebugDetails, "Show Debug");
 
             float configY = panel.y + 58f;
             GUI.Label(new Rect(panel.x + 14, configY, 82, 24), "Server IP");
@@ -89,7 +93,7 @@ namespace SMPL0901Player.Runtime
                 new Rect(panel.x + 490, configY, 65, 24), rsv1PortText ?? "9096");
 
             float buttonY = configY + 31f;
-            if (GUI.Button(new Rect(panel.x + 14, buttonY, 145, 26), "Reconnect Both") &&
+            if (GUI.Button(new Rect(panel.x + 14, buttonY, 145, 26), "Start Receiving") &&
                 player != null && rawSkeleton != null &&
                 int.TryParse(smv2PortText, out int smv2Port) &&
                 int.TryParse(rsv1PortText, out int rsv1Port))
@@ -97,20 +101,96 @@ namespace SMPL0901Player.Runtime
                 player.Reconnect(smv2Port, serverIpText);
                 rawSkeleton.Reconnect(rsv1Port, serverIpText);
             }
-            if (GUI.Button(new Rect(panel.x + 170, buttonY, 145, 26), "Reset Root Anchor") &&
+            if (GUI.Button(new Rect(panel.x + 170, buttonY, 105, 26), "Stop Receiving"))
+            {
+                if (player != null)
+                {
+                    player.StopListening();
+                    player.ShowTPose();
+                }
+                if (rawSkeleton != null)
+                {
+                    rawSkeleton.StopListening();
+                    rawSkeleton.ShowPreviewTPose();
+                }
+                latest = null;
+            }
+            if (GUI.Button(new Rect(panel.x + 286, buttonY, 140, 26), "Reset Root Anchor") &&
                 player != null)
                 player.ResetRootAnchor();
-            if (GUI.Button(new Rect(panel.x + 326, buttonY, 130, 26), "Accept Any IP"))
+            if (GUI.Button(new Rect(panel.x + 437, buttonY, 120, 26), "Accept Any IP"))
             {
                 serverIpText = string.Empty;
-                if (player != null && rawSkeleton != null &&
-                    int.TryParse(smv2PortText, out int anySmv2Port) &&
-                    int.TryParse(rsv1PortText, out int anyRsv1Port))
+            }
+
+            float placementY = buttonY + 34f;
+            GUI.Label(new Rect(panel.x + 14, placementY, 72, 24), "Player Pos");
+            if (player != null && player.rootMotion != null)
+            {
+                Vector3 offset = player.rootMotion.manualOffset;
+                Vector3 adjusted = new Vector3(
+                    DrawOffsetSlider(new Rect(panel.x + 84, placementY, 145, 24), "X", offset.x),
+                    DrawOffsetSlider(new Rect(panel.x + 238, placementY, 145, 24), "Y", offset.y),
+                    DrawOffsetSlider(new Rect(panel.x + 392, placementY, 145, 24), "Z", offset.z));
+                if ((adjusted - offset).sqrMagnitude > 1e-8f)
+                    player.rootMotion.SetManualOffset(adjusted);
+                if (GUI.Button(new Rect(panel.x + 548, placementY - 1f, 126, 25), "Reset Position"))
+                    player.rootMotion.ResetManualOffset();
+            }
+
+            float rawPlacementY = placementY + 34f;
+            GUI.Label(new Rect(panel.x + 14, rawPlacementY, 72, 24), "Raw Offset");
+            if (rawSkeleton != null)
+            {
+                Vector3 rawOffset = rawSkeleton.alignmentOffset;
+                Vector3 adjustedRaw = new Vector3(
+                    DrawOffsetSlider(new Rect(panel.x + 84, rawPlacementY, 145, 24), "X", rawOffset.x),
+                    DrawOffsetSlider(new Rect(panel.x + 238, rawPlacementY, 145, 24), "Y", rawOffset.y),
+                    DrawOffsetSlider(new Rect(panel.x + 392, rawPlacementY, 145, 24), "Z", rawOffset.z));
+                if ((adjustedRaw - rawOffset).sqrMagnitude > 1e-8f)
+                    rawSkeleton.SetAlignmentOffset(adjustedRaw);
+                if (GUI.Button(new Rect(panel.x + 548, rawPlacementY - 1f, 126, 25), "Reset Raw Offset"))
+                    rawSkeleton.ResetAlignmentOffset();
+            }
+
+            float rotationY = rawPlacementY + 34f;
+            GUI.Label(new Rect(panel.x + 14, rotationY, 72, 24), "Live Pose Rot");
+            if (player != null && rawSkeleton != null)
+            {
+                Vector3 sourceEuler = player.livePoseEuler;
+                Vector3 adjustedEuler = new Vector3(
+                    DrawAngleSlider(new Rect(panel.x + 84, rotationY, 145, 24), "X", sourceEuler.x),
+                    DrawAngleSlider(new Rect(panel.x + 238, rotationY, 145, 24), "Y", sourceEuler.y),
+                    DrawAngleSlider(new Rect(panel.x + 392, rotationY, 145, 24), "Z", sourceEuler.z));
+                if ((adjustedEuler - sourceEuler).sqrMagnitude > 1e-6f)
                 {
-                    player.Reconnect(anySmv2Port, string.Empty);
-                    rawSkeleton.Reconnect(anyRsv1Port, string.Empty);
+                    player.livePoseEuler = adjustedEuler;
+                    rawSkeleton.rotationOffset = adjustedEuler;
+                }
+                if (GUI.Button(new Rect(panel.x + 548, rotationY - 1f, 126, 25), "Reset Rotation"))
+                {
+                    Vector3 defaultEuler = new Vector3(0f, 0f, 90f);
+                    player.livePoseEuler = defaultEuler;
+                    rawSkeleton.rotationOffset = defaultEuler;
                 }
             }
+
+            float displayRotationY = rotationY + 34f;
+            GUI.Label(new Rect(panel.x + 14, displayRotationY, 72, 24), "Display Rot");
+            if (player != null && player.rootMotion != null)
+            {
+                Vector3 displayEuler = player.rootMotion.displayEuler;
+                Vector3 adjustedDisplayEuler = new Vector3(
+                    DrawAngleSlider(new Rect(panel.x + 84, displayRotationY, 145, 24), "X", displayEuler.x),
+                    DrawAngleSlider(new Rect(panel.x + 238, displayRotationY, 145, 24), "Y", displayEuler.y),
+                    DrawAngleSlider(new Rect(panel.x + 392, displayRotationY, 145, 24), "Z", displayEuler.z));
+                if ((adjustedDisplayEuler - displayEuler).sqrMagnitude > 1e-6f)
+                    player.rootMotion.SetDisplayEuler(adjustedDisplayEuler);
+                if (GUI.Button(new Rect(panel.x + 548, displayRotationY - 1f, 126, 25), "Face Camera"))
+                    player.rootMotion.ResetDisplayEuler();
+            }
+
+            if (!showDebugDetails) return;
 
             string smv2Connection = player != null && player.IsListening ? "LISTENING" : "STOPPED";
             string smv2Age = player == null || float.IsPositiveInfinity(player.SecondsSinceLastPacket)
@@ -146,12 +226,17 @@ namespace SMPL0901Player.Runtime
                 $"ignored={rawSkeleton.IgnoredPackets}, " +
                 $"decodeErrors={rawSkeleton.DecodeErrors}";
 
-            float statusY = buttonY + 36f;
+            float statusY = displayRotationY + 34f;
             GUI.Label(
                 new Rect(panel.x + 14, statusY, panel.width - 28, 220f),
                 $"Unity local IPv4: {localIpv4Text}\n" +
                 $"Filter: {(string.IsNullOrWhiteSpace(serverIpText) ? "ANY" : serverIpText)}\n" +
-                smv2Transport + "\n" + rawTransport + "\n" + qualityText,
+                smv2Transport + "\n" + rawTransport + "\n" + qualityText + "\n" +
+                $"Binding: {(player != null ? player.BindingStatus : "--")}\n" +
+                $"Player offset: {FormatVector(player != null && player.rootMotion != null ? player.rootMotion.manualOffset : Vector3.zero)}  " +
+                $"Live pose rot: {FormatVector(player != null ? player.livePoseEuler : Vector3.zero)}  " +
+                $"Display rot: {FormatVector(player != null && player.rootMotion != null ? player.rootMotion.displayEuler : Vector3.zero)}  " +
+                $"Raw offset: {FormatVector(rawSkeleton != null ? rawSkeleton.alignmentOffset : Vector3.zero)}",
                 labelStyle);
 
             string debug = BuildDebugMessage();
@@ -160,10 +245,35 @@ namespace SMPL0901Player.Runtime
                 debug, labelStyle);
         }
 
+        private static float DrawOffsetSlider(Rect rect, string axis, float value)
+        {
+            GUI.Label(new Rect(rect.x, rect.y, 18f, rect.height), axis);
+            float result = GUI.HorizontalSlider(
+                new Rect(rect.x + 18f, rect.y + 6f, 82f, 16f), value, -5f, 5f);
+            GUI.Label(new Rect(rect.x + 104f, rect.y, 45f, rect.height), result.ToString("F2"));
+            return result;
+        }
+
+        private static float DrawAngleSlider(Rect rect, string axis, float value)
+        {
+            GUI.Label(new Rect(rect.x, rect.y, 18f, rect.height), axis);
+            float result = GUI.HorizontalSlider(
+                new Rect(rect.x + 18f, rect.y + 6f, 82f, 16f), value, -180f, 180f);
+            GUI.Label(new Rect(rect.x + 104f, rect.y, 45f, rect.height), result.ToString("F0"));
+            return result;
+        }
+
+        private static string FormatVector(Vector3 value)
+        {
+            return $"({value.x:F2}, {value.y:F2}, {value.z:F2})";
+        }
+
         private string BuildDebugMessage()
         {
             if (player == null || rawSkeleton == null)
                 return "<color=#ff6b6b>DEBUG: Re-run SMPL 0901/Create Live Player in Scene.</color>";
+            if (!player.IsListening && !rawSkeleton.IsListening)
+                return "<color=#7dd3fc>READY: T-pose preview. Adjust position/rotation, then press Start Receiving.</color>";
             if (!player.IsListening || !rawSkeleton.IsListening)
             {
                 string error = !string.IsNullOrEmpty(player.LastError)

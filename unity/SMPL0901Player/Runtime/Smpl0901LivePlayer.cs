@@ -18,11 +18,19 @@ namespace SMPL0901Player.Runtime
         [Header("Character")]
         public GameObject characterPrefab;
         public Vector3 pelvisLocalOffset = Vector3.zero;
+        [Tooltip("SUP's authored SMPL-H rig correction. Keep this separate from display/source controls.")]
+        public Vector3 supRigPelvisEuler = new Vector3(-90f, 0f, 0f);
+        [Tooltip("Internal pelvis-only correction. Normally leave at zero.")]
+        public Vector3 pelvisCorrectionEuler = Vector3.zero;
+        [Tooltip("Whole received pose orientation. Applied to the character root, never to an individual bone.")]
+        public Vector3 livePoseEuler = new Vector3(0f, 0f, 90f);
         public bool renderCharacter = true;
 
         [Header("SMV2 UDP")]
         public int listenPort = 9095;
-        public bool listenOnStart = true;
+        public bool listenOnStart = false;
+        [Tooltip("Open the socket only after Start Receiving is pressed.")]
+        public bool requireManualStart = true;
         [Tooltip("Optional source-IP filter. Empty accepts SMV2 from any host.")]
         public string allowedServerIp = "192.168.1.250";
 
@@ -49,13 +57,21 @@ namespace SMPL0901Player.Runtime
             ? float.PositiveInfinity
             : Time.realtimeSinceStartup - lastPacketRealtime;
         public Transform[] RuntimeBones => bones;
+        public Transform RuntimePelvis => pelvisBone;
+        public string BindingStatus { get; private set; } = "not built";
 
         private readonly object frameLock = new object();
         private ProtocolV2Frame pendingFrame;
         private bool hasPendingFrame;
         private GameObject runtimeCharacter;
+        private Transform livePoseRoot;
         private SkinnedMeshRenderer skinnedMesh;
+        private SkinnedMeshRenderer[] characterRenderers;
         private Transform[] bones;
+        private Quaternion[] bindLocalRotations;
+        private Vector3[] bindLocalPositions;
+        private Transform pelvisBone;
+        private int[] bodyBoneIndices;
         private UdpClient udpClient;
         private Thread receiveThread;
         private volatile bool receiverRunning;
@@ -71,6 +87,13 @@ namespace SMPL0901Player.Runtime
 
         private void Awake()
         {
+            // Migrate the two revisions that mixed source/display correction
+            // into the SUP rig's own pelvis basis conversion.
+            if (Mathf.Abs(pelvisCorrectionEuler.x) < 0.01f &&
+                Mathf.Abs(pelvisCorrectionEuler.y) < 0.01f &&
+                Mathf.Abs(Mathf.Abs(pelvisCorrectionEuler.z) - 90f) < 0.01f)
+                pelvisCorrectionEuler = Vector3.zero;
+
             // Existing scenes may have been generated before RSV1/fitted
             // skeleton support was added. Repair the dedicated 0901 object at
             // runtime instead of leaving the UI in "receiver missing" state.
@@ -83,10 +106,12 @@ namespace SMPL0901Player.Runtime
             if (rawSkeleton == null) rawSkeleton = GetOrAdd<Rsv1RawSkeletonRenderer>();
 
             rootMotion.runtimeRoot = transform;
+            rootMotion.SetDisplayEuler(rootMotion.displayEuler);
             fittedSkeleton.player = this;
             trackingPanel.player = this;
             trackingPanel.fittedSkeleton = fittedSkeleton;
             trackingPanel.rawSkeleton = rawSkeleton;
+            rawSkeleton.player = this;
             if (string.IsNullOrWhiteSpace(rawSkeleton.allowedServerIp))
                 rawSkeleton.allowedServerIp = allowedServerIp;
         }
@@ -95,12 +120,13 @@ namespace SMPL0901Player.Runtime
         {
             hasStarted = true;
             BuildCharacter();
-            if (listenOnStart) StartListening();
+            if (listenOnStart && !requireManualStart) StartListening();
         }
 
         private void OnEnable()
         {
-            if (hasStarted && listenOnStart && !IsListening) StartListening();
+            if (hasStarted && listenOnStart && !requireManualStart && !IsListening)
+                StartListening();
         }
 
         public void BuildCharacter()
@@ -113,9 +139,15 @@ namespace SMPL0901Player.Runtime
                 return;
             }
 
+            GameObject orientationObject = new GameObject("SMPL0901_LivePoseRoot");
+            orientationObject.transform.SetParent(transform, false);
+            livePoseRoot = orientationObject.transform;
             runtimeCharacter = Instantiate(
-                characterPrefab, transform.position, Quaternion.identity, transform);
+                characterPrefab, livePoseRoot.position, Quaternion.identity, livePoseRoot);
             runtimeCharacter.name = characterPrefab.name + "_0901_Runtime";
+            // The Instantiate overload preserves world rotation. Force the
+            // character to inherit the outer player's display orientation.
+            runtimeCharacter.transform.localRotation = Quaternion.identity;
 
             CharacterPoser poser = runtimeCharacter.GetComponentInChildren<CharacterPoser>(true);
             if (poser != null) poser.enabled = false;
@@ -142,12 +174,56 @@ namespace SMPL0901Player.Runtime
                 Debug.LogError($"[SMPL0901] {LastError}", this);
                 return;
             }
+            characterRenderers = runtimeCharacter.GetComponentsInChildren<SkinnedMeshRenderer>(true);
+
+            bindLocalRotations = new Quaternion[bones.Length];
+            bindLocalPositions = new Vector3[bones.Length];
+            bodyBoneIndices = new int[22];
+            for (int index = 0; index < bodyBoneIndices.Length; index++)
+                bodyBoneIndices[index] = -1;
+            for (int index = 0; index < bones.Length; index++)
+            {
+                Transform bone = bones[index];
+                if (bone == null) continue;
+                bindLocalRotations[index] = bone.localRotation;
+                bindLocalPositions[index] = bone.localPosition;
+                if (bone.name == Bones.Pelvis) pelvisBone = bone;
+                if (Bones.NameToJointIndex.TryGetValue(bone.name, out int poseIndex) &&
+                    poseIndex >= 0 && poseIndex < bodyBoneIndices.Length)
+                {
+                    if (bodyBoneIndices[poseIndex] >= 0)
+                        Debug.LogWarning($"[SMPL0901] Duplicate body binding for pose {poseIndex}: {bone.name}.", this);
+                    else
+                        bodyBoneIndices[poseIndex] = index;
+                }
+            }
+
+            int mappedBodyBones = 0;
+            string missing = string.Empty;
+            for (int poseIndex = 0; poseIndex < bodyBoneIndices.Length; poseIndex++)
+            {
+                if (bodyBoneIndices[poseIndex] >= 0) mappedBodyBones++;
+                else missing += (missing.Length == 0 ? string.Empty : ",") + poseIndex;
+            }
+            BindingStatus = missing.Length == 0
+                ? "22/22 SMPL body joints mapped"
+                : $"{mappedBodyBones}/22 mapped; missing pose indices: {missing}";
+            if (missing.Length > 0)
+                Debug.LogError($"[SMPL0901] Bone binding incomplete: {BindingStatus}", this);
+
+            // Some SUP "New" prefabs contain a large authored child offset.
+            // Move the instantiated prefab once so its bind-pose pelvis is at
+            // this player's origin. Root motion then moves the outer player,
+            // and raw RSV1 can share the exact same pelvis anchor.
+            if (pelvisBone != null)
+                runtimeCharacter.transform.position += livePoseRoot.position - pelvisBone.position;
 
             if (rootMotion != null) rootMotion.runtimeRoot = transform;
             if (handRetargeter != null)
                 handRetargeter.Initialize(runtimeCharacter.transform);
+            ShowTPose();
             SetCharacterVisible(renderCharacter);
-            Debug.Log($"[SMPL0901] Character ready with {bones.Length} bones.", this);
+            Debug.Log($"[SMPL0901] Character ready with {bones.Length} bones; {BindingStatus}.", this);
         }
 
         public void StartListening()
@@ -218,7 +294,35 @@ namespace SMPL0901Player.Runtime
         public void SetCharacterVisible(bool visible)
         {
             renderCharacter = visible;
-            if (skinnedMesh != null) skinnedMesh.enabled = visible;
+            if (characterRenderers == null && runtimeCharacter != null)
+                characterRenderers = runtimeCharacter.GetComponentsInChildren<SkinnedMeshRenderer>(true);
+            if (characterRenderers == null) return;
+            foreach (SkinnedMeshRenderer renderer in characterRenderers)
+            {
+                if (renderer != null) renderer.enabled = visible;
+            }
+        }
+
+        public void ShowTPose()
+        {
+            if (bones == null || bindLocalRotations == null || bindLocalPositions == null)
+                return;
+            // Preview orientation uses only the outer Display Rot. The live
+            // source correction is applied only after a received pose arrives.
+            if (livePoseRoot != null)
+                livePoseRoot.localRotation = Quaternion.identity;
+            for (int index = 0; index < bones.Length; index++)
+            {
+                Transform bone = bones[index];
+                if (bone == null) continue;
+                bone.localRotation = bindLocalRotations[index];
+                bone.localPosition = bindLocalPositions[index];
+                if (bone.name == Bones.Pelvis)
+                {
+                    bone.localPosition = bindLocalPositions[index] + pelvisLocalOffset;
+                }
+            }
+            if (handRetargeter != null) handRetargeter.ResetToBindPose();
         }
 
         private static bool IsMatchingIp(IPAddress remote, IPAddress allowed)
@@ -314,6 +418,13 @@ namespace SMPL0901Player.Runtime
             }
         }
 
+        private void LateUpdate()
+        {
+            // SUP's MeshDisplay may restore renderer.enabled during Update.
+            // Enforce the runtime UI choice after all regular Update calls.
+            if (!renderCharacter) SetCharacterVisible(false);
+        }
+
         private void ApplyFrame(ProtocolV2Frame frame)
         {
             if (frame == null || frame.body == null ||
@@ -336,6 +447,11 @@ namespace SMPL0901Player.Runtime
                 return;
             }
 
+            // This is a whole-pose coordinate correction. Keeping it on the
+            // instantiated character root prevents it from contaminating the
+            // SMPL pelvis/local skinning rotations.
+            if (livePoseRoot != null)
+                livePoseRoot.localRotation = Quaternion.Euler(livePoseEuler);
             ApplyBodyPose(frame.body.pose);
             if (rootMotion != null)
                 rootMotion.ApplyFrame(
@@ -348,22 +464,30 @@ namespace SMPL0901Player.Runtime
 
         private void ApplyBodyPose(float[] pose)
         {
-            foreach (Transform bone in bones)
+            if (bodyBoneIndices == null || bodyBoneIndices.Length != 22) return;
+            for (int poseIndex = 0; poseIndex < bodyBoneIndices.Length; poseIndex++)
             {
-                if (bone == null ||
-                    !Bones.NameToJointIndex.TryGetValue(bone.name, out int poseIndex) ||
-                    poseIndex * 3 + 2 >= pose.Length)
-                    continue;
+                int boneIndex = bodyBoneIndices[poseIndex];
+                if (boneIndex < 0 || boneIndex >= bones.Length) continue;
+                Transform bone = bones[boneIndex];
+                if (bone == null || poseIndex * 3 + 2 >= pose.Length) continue;
 
-                // The server sends zero SMPL-H finger slots. Finger bones are
-                // exclusively driven from wrist-local Hand21 after this pass.
-                if (poseIndex >= 22) continue;
-
-                bone.localEulerAngles = Vector3.zero;
+                // Match the legacy RealtimePipelinePlayer exactly. SUP's
+                // runtime rig expects an identity local pose every frame;
+                // authored bind rotations must not be accumulated here.
+                bone.localRotation = Quaternion.identity;
                 if (bone.name == Bones.Pelvis)
                 {
-                    bone.Rotate(-90f, 0f, 0f, Space.Self);
-                    bone.localPosition = pelvisLocalOffset;
+                    // Match SUP CharacterPoser exactly: its exported SMPL-H
+                    // pelvis requires -90 degrees around X before the converted
+                    // SMPL root rotation. User/source correction is a separate
+                    // output-space rotation and must not replace this step.
+                    bone.localRotation = Quaternion.Euler(pelvisCorrectionEuler) *
+                        Quaternion.Euler(supRigPelvisEuler);
+                    Vector3 bindPosition = bindLocalPositions != null &&
+                        boneIndex < bindLocalPositions.Length
+                        ? bindLocalPositions[boneIndex] : Vector3.zero;
+                    bone.localPosition = bindPosition + pelvisLocalOffset;
                 }
 
                 int offset = poseIndex * 3;
@@ -375,7 +499,7 @@ namespace SMPL0901Player.Runtime
                 Quaternion axisAngle = Quaternion.AngleAxis(
                     radians * Mathf.Rad2Deg,
                     new Vector3(x, y, z) / radians);
-                bone.localRotation = bone.localRotation * axisAngle.ToLeftHanded();
+                bone.localRotation *= axisAngle.ToLeftHanded();
             }
         }
 

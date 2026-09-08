@@ -277,6 +277,52 @@ class ProtocolTests(unittest.TestCase):
         self.assertIn('magic != "RSV1"', codec)
         self.assertIn("reader.ReadUInt64()", codec)
 
+    def test_unity_player_keeps_hybrid_alignment_contract(self):
+        unity_root = Path(__file__).parents[1] / "unity" / "SMPL0901Player"
+        player = (unity_root / "Runtime" / "Smpl0901LivePlayer.cs").read_text(
+            encoding="utf-8"
+        )
+        raw = (unity_root / "Runtime" / "Rsv1RawSkeletonRenderer.cs").read_text(
+            encoding="utf-8"
+        )
+        hands = (unity_root / "Runtime" / "Smpl0901RawHandRetargeter.cs").read_text(
+            encoding="utf-8"
+        )
+        panel = (unity_root / "Runtime" / "Smpl0901TrackingPanel.cs").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn("RuntimePelvis", player)
+        self.assertLess(player.index("ApplyBodyPose(frame.body.pose)"),
+                        player.index("handRetargeter.ApplyHands(frame.hands)"))
+        self.assertIn("followSmplPelvis", raw)
+        self.assertIn("player.RuntimePelvis.position", raw)
+        self.assertIn("SetAlignmentOffset", raw)
+        self.assertIn("ShowPreviewTPose", raw)
+        self.assertIn("public bool requireManualStart = true", raw)
+        self.assertIn("segment.bone.localRotation, targetRotation", hands)
+        self.assertIn("pelvisCorrectionEuler", player)
+        self.assertIn("public bool requireManualStart = true", player)
+        self.assertIn("ShowTPose", player)
+        self.assertIn("GetComponentsInChildren<SkinnedMeshRenderer>(true)", player)
+        self.assertIn("if (!renderCharacter) SetCharacterVisible(false)", player)
+        self.assertIn("showDebugDetails", panel)
+        self.assertIn("SetManualOffset", panel)
+        self.assertIn("Reset Raw Offset", panel)
+        self.assertIn("Start Receiving", panel)
+        self.assertIn("Stop Receiving", panel)
+        self.assertIn("Live Pose Rot", panel)
+        self.assertIn("Display Rot", panel)
+        self.assertIn("BindingStatus", player)
+        self.assertIn("new Vector3(-90f, 0f, 0f)", player)
+        self.assertIn("Quaternion.Euler(supRigPelvisEuler)", player)
+        self.assertIn("invertX ? -x : x", raw)
+        root_motion = (unity_root / "Runtime" / "Smpl0901RootMotionDriver.cs").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("new Vector3(0f, 180f, 0f)", root_motion)
+        self.assertIn("SetDisplayEuler", root_motion)
+
 
 if __name__ == "__main__":
     unittest.main()

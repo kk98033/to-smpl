@@ -13,14 +13,24 @@ namespace SMPL0901Player.Runtime
     /// </summary>
     public sealed class Rsv1RawSkeletonRenderer : MonoBehaviour
     {
+        [Header("Alignment")]
+        public Smpl0901LivePlayer player;
+        [Tooltip("Keep raw pelvis on the rendered SMPL pelvis.")]
+        public bool followSmplPelvis = true;
+        [Tooltip("Fine alignment offset in the live-player coordinate frame.")]
+        public Vector3 alignmentOffset = Vector3.zero;
+
         [Header("RSV1 UDP")]
         public int listenPort = 9096;
-        public bool listenOnStart = true;
+        public bool listenOnStart = false;
+        [Tooltip("Open the socket only after Start Receiving is pressed.")]
+        public bool requireManualStart = true;
         [Tooltip("Optional source-IP filter. Empty accepts RSV1 from any host.")]
         public string allowedServerIp = "192.168.1.250";
 
         [Header("Rendering")]
         public bool renderRawSkeleton = true;
+        public bool showTPoseBeforeFirstFrame = true;
         [Range(0f, 1f)] public float minimumConfidence = 0.5f;
         public Color bodyColor = new Color(1f, 0.55f, 0.1f, 1f);
         public Color handColor = new Color(1f, 0.2f, 0.7f, 1f);
@@ -30,7 +40,9 @@ namespace SMPL0901Player.Runtime
         public float handLineWidth = 0.006f;
 
         [Header("Raw source to Unity")]
-        [Tooltip("Rotation offset applied to raw skeleton (e.g. -90,0,0 to match SMPL root or 0,90,0).")]
+        [Tooltip("Use the same basis as bridge x,-y,z followed by SUP Maya/SMPL to Unity conversion: raw (x,y,z) -> Unity (-x,z,y).")]
+        public bool useSmplCoordinateConversion = false;
+        [Tooltip("Optional correction after the exact SMPL-to-Unity basis conversion.")]
         public Vector3 rotationOffset = Vector3.zero;
         [Tooltip("Matches bridge default axis x,-y,z plus Unity handedness conversion.")]
         public bool invertX = true;
@@ -81,13 +93,16 @@ namespace SMPL0901Player.Runtime
         private void Start()
         {
             hasStarted = true;
+            if (player == null) player = GetComponent<Smpl0901LivePlayer>();
+            if (player != null) rotationOffset = player.livePoseEuler;
             BuildVisuals();
-            if (listenOnStart) StartListening();
+            if (listenOnStart && !requireManualStart) StartListening();
         }
 
         private void OnEnable()
         {
-            if (hasStarted && listenOnStart && !IsListening) StartListening();
+            if (hasStarted && listenOnStart && !requireManualStart && !IsListening)
+                StartListening();
         }
 
         public void StartListening()
@@ -148,6 +163,67 @@ namespace SMPL0901Player.Runtime
         {
             renderRawSkeleton = visible;
             if (skeletonRoot != null) skeletonRoot.gameObject.SetActive(visible);
+        }
+
+        public void SetAlignmentOffset(Vector3 value)
+        {
+            alignmentOffset = value;
+        }
+
+        public void ResetAlignmentOffset()
+        {
+            alignmentOffset = Vector3.zero;
+        }
+
+        public void ShowPreviewTPose()
+        {
+            if (skeletonRoot == null) BuildVisuals();
+            if (jointObjects == null || boneLines == null) return;
+
+            Vector3[] positions = new Vector3[Rsv1RawSkeletonCodec.JointCount];
+            bool[] valid = new bool[Rsv1RawSkeletonCodec.JointCount];
+            for (int index = 0; index < valid.Length; index++) valid[index] = true;
+
+            positions[0] = new Vector3(0f, 0.78f, 0f);
+            positions[1] = new Vector3(-0.035f, 0.81f, 0f);
+            positions[2] = new Vector3(0.035f, 0.81f, 0f);
+            positions[3] = new Vector3(-0.085f, 0.79f, 0f);
+            positions[4] = new Vector3(0.085f, 0.79f, 0f);
+            positions[5] = new Vector3(-0.22f, 0.55f, 0f);
+            positions[6] = new Vector3(0.22f, 0.55f, 0f);
+            positions[7] = new Vector3(-0.50f, 0.55f, 0f);
+            positions[8] = new Vector3(0.50f, 0.55f, 0f);
+            positions[9] = new Vector3(-0.78f, 0.55f, 0f);
+            positions[10] = new Vector3(0.78f, 0.55f, 0f);
+            positions[11] = new Vector3(-0.12f, 0f, 0f);
+            positions[12] = new Vector3(0.12f, 0f, 0f);
+            positions[13] = new Vector3(-0.12f, -0.45f, 0f);
+            positions[14] = new Vector3(0.12f, -0.45f, 0f);
+            positions[15] = new Vector3(-0.12f, -0.92f, 0f);
+            positions[16] = new Vector3(0.12f, -0.92f, 0f);
+            FillPreviewHand(positions, 17, positions[9], -1f);
+            FillPreviewHand(positions, 38, positions[10], 1f);
+
+            RenderPositions(positions, valid);
+            LatestFrameId = -1;
+            LastError = string.Empty;
+        }
+
+        private static void FillPreviewHand(
+            Vector3[] positions, int offset, Vector3 wrist, float side)
+        {
+            positions[offset] = wrist;
+            int[] starts = { 1, 5, 9, 13, 17 };
+            float[] yOffsets = { -0.045f, 0.055f, 0.025f, -0.005f, -0.035f };
+            for (int finger = 0; finger < starts.Length; finger++)
+            {
+                for (int joint = 0; joint < 4; joint++)
+                {
+                    float length = 0.035f + 0.045f * joint;
+                    positions[offset + starts[finger] + joint] = wrist +
+                        new Vector3(side * length, yOffsets[finger], 0f);
+                }
+            }
         }
 
         private static bool IsMatchingIp(IPAddress remote, IPAddress allowed)
@@ -216,6 +292,7 @@ namespace SMPL0901Player.Runtime
         private void Update()
         {
             if (skeletonRoot == null) BuildVisuals();
+
             Rsv1RawSkeletonFrame frame = null;
             lock (frameLock)
             {
@@ -229,6 +306,8 @@ namespace SMPL0901Player.Runtime
             if (frame != null)
             {
                 lastPacketRealtime = Time.realtimeSinceStartup;
+                // RSV1 is the direct inference stream and must remain live even
+                // while the slower SMPL fit is processing or dropping a frame.
                 ApplyFrame(frame);
             }
             float elapsed = Time.realtimeSinceStartup - fpsWindowStart;
@@ -239,6 +318,16 @@ namespace SMPL0901Player.Runtime
                 fpsWindowPackets = count;
                 fpsWindowStart = Time.realtimeSinceStartup;
             }
+        }
+
+        private void LateUpdate()
+        {
+            if (!followSmplPelvis || skeletonRoot == null) return;
+            if (player == null) player = GetComponent<Smpl0901LivePlayer>();
+            if (player == null || player.RuntimePelvis == null) return;
+            skeletonRoot.position = player.RuntimePelvis.position +
+                transform.TransformVector(alignmentOffset);
+            skeletonRoot.rotation = transform.rotation;
         }
 
         private void BuildVisuals()
@@ -279,6 +368,7 @@ namespace SMPL0901Player.Runtime
                 line.sharedMaterial = hand ? handMaterial : bodyMaterial;
                 boneLines[index] = line;
             }
+            if (showTPoseBeforeFirstFrame) ShowPreviewTPose();
             SetVisible(renderRawSkeleton);
         }
 
@@ -302,10 +392,21 @@ namespace SMPL0901Player.Runtime
                 float z = frame.points[offset + 2];
                 valid[index] = frame.confidence[index] >= minimumConfidence &&
                     IsFinite(x) && IsFinite(y) && IsFinite(z);
-                Vector3 pos = new Vector3(
-                    invertX ? -x : x,
-                    invertY ? -y : y,
-                    invertZ ? -z : z) * scale;
+                Vector3 pos;
+                if (useSmplCoordinateConversion)
+                {
+                    // RSV1 contains original camera points. The bridge fits
+                    // (x,-y,z); SUP renders that SMPL coordinate as (-x,z,-y),
+                    // therefore the direct raw-to-Unity mapping is (-x,z,y).
+                    pos = new Vector3(-x, z, y) * scale;
+                }
+                else
+                {
+                    pos = new Vector3(
+                        invertX ? -x : x,
+                        invertY ? -y : y,
+                        invertZ ? -z : z) * scale;
+                }
                 if (rotationOffset != Vector3.zero)
                 {
                     pos = rotOffset * pos;
@@ -320,9 +421,16 @@ namespace SMPL0901Player.Runtime
             LastError = string.Empty;
             Vector3 pelvis = (positions[11] + positions[12]) * 0.5f;
             for (int index = 0; index < positions.Length; index++)
+                positions[index] -= pelvis;
+            RenderPositions(positions, valid);
+        }
+
+        private void RenderPositions(Vector3[] positions, bool[] valid)
+        {
+            for (int index = 0; index < positions.Length; index++)
             {
                 jointObjects[index].SetActive(renderRawSkeleton && valid[index]);
-                if (valid[index]) jointObjects[index].transform.localPosition = positions[index] - pelvis;
+                if (valid[index]) jointObjects[index].transform.localPosition = positions[index];
             }
             for (int index = 0; index < Connections.Length; index++)
             {
@@ -331,8 +439,8 @@ namespace SMPL0901Player.Runtime
                 bool show = renderRawSkeleton && valid[a] && valid[b];
                 boneLines[index].enabled = show;
                 if (!show) continue;
-                boneLines[index].SetPosition(0, positions[a] - pelvis);
-                boneLines[index].SetPosition(1, positions[b] - pelvis);
+                boneLines[index].SetPosition(0, positions[a]);
+                boneLines[index].SetPosition(1, positions[b]);
             }
         }
 

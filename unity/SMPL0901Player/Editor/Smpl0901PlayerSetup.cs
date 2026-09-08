@@ -53,14 +53,21 @@ namespace SMPL0901Player.Editor
             Rsv1RawSkeletonRenderer raw = GetOrAdd<Rsv1RawSkeletonRenderer>(target);
 
             player.listenPort = 9095;
-            player.listenOnStart = true;
+            player.listenOnStart = false;
+            player.requireManualStart = true;
             player.allowedServerIp = "192.168.1.250";
+            player.supRigPelvisEuler = new Vector3(-90f, 0f, 0f);
+            player.pelvisCorrectionEuler = Vector3.zero;
+            player.livePoseEuler = new Vector3(0f, 0f, 90f);
             player.rootMotion = root;
             player.handRetargeter = hands;
             player.trackingPanel = panel;
             player.fittedSkeleton = fitted;
             player.rawSkeleton = raw;
             root.runtimeRoot = target.transform;
+            root.useSmplCoordinateConversion = false;
+            root.displayEuler = new Vector3(0f, 180f, 0f);
+            root.SetDisplayEuler(root.displayEuler);
             root.invertSourceX = true;
             root.applyVertical = false;
             hands.snapToInput = false;
@@ -73,11 +80,22 @@ namespace SMPL0901Player.Editor
             fitted.player = player;
             fitted.renderFittedSkeleton = false;
             raw.listenPort = 9096;
-            raw.listenOnStart = true;
+            raw.listenOnStart = false;
+            raw.requireManualStart = true;
+            raw.showTPoseBeforeFirstFrame = true;
             raw.allowedServerIp = "192.168.1.250";
+            raw.useSmplCoordinateConversion = false;
+            raw.invertX = true;
+            raw.invertY = true;
+            raw.invertZ = false;
+            raw.rotationOffset = player.livePoseEuler;
+            raw.player = player;
+            raw.followSmplPelvis = true;
+            raw.alignmentOffset = Vector3.zero;
             raw.renderRawSkeleton = true;
             panel.visible = true;
-            panel.panelSize = new Vector2(580f, 445f);
+            panel.showDebugDetails = false;
+            panel.panelSize = new Vector2(690f, 580f);
 
             if (player.characterPrefab == null)
                 player.characterPrefab = FindSupCharacterPrefab();
