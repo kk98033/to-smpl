@@ -49,6 +49,9 @@ namespace SMPL0901Player.Runtime
         public long AcceptedPackets => Interlocked.Read(ref acceptedPackets);
         public long DecodeErrors => Interlocked.Read(ref decodeErrors);
         public long IgnoredPackets => Interlocked.Read(ref ignoredPackets);
+        public long AppliedPoseFrames { get; private set; }
+        public long HeldInputFrames { get; private set; }
+        public string PoseApplyStatus { get; private set; } = "waiting for SMV2";
         public float ReceiveFps { get; private set; }
         public string LastError { get; private set; } = string.Empty;
         public string LastObservedSenderIp { get; private set; } = string.Empty;
@@ -57,6 +60,9 @@ namespace SMPL0901Player.Runtime
         public float SecondsSinceLastPacket => lastPacketRealtime < 0f
             ? float.PositiveInfinity
             : Time.realtimeSinceStartup - lastPacketRealtime;
+        public float SecondsSinceLastAppliedPose => lastAppliedPoseRealtime < 0f
+            ? float.PositiveInfinity
+            : Time.realtimeSinceStartup - lastAppliedPoseRealtime;
         public Transform[] RuntimeBones => bones;
         public Transform RuntimePelvis => pelvisBone;
         public string BindingStatus { get; private set; } = "not built";
@@ -102,6 +108,7 @@ namespace SMPL0901Player.Runtime
         private Thread receiveThread;
         private volatile bool receiverRunning;
         private float lastPacketRealtime = -1f;
+        private float lastAppliedPoseRealtime = -1f;
         private float fpsWindowStart;
         private long fpsWindowPackets;
         private long receivedPackets;
@@ -520,21 +527,31 @@ namespace SMPL0901Player.Runtime
         {
             if (frame == null || frame.body == null ||
                 frame.quality == null || frame.protocolVersion != 2)
+            {
+                PoseApplyStatus = "decoded frame is incomplete";
                 return;
+            }
 
             LatestFrameId = frame.frameId;
             if (trackingPanel != null) trackingPanel.SetFrame(frame);
 
-            if (!frame.quality.inputValid) return; // Hold the last valid pose.
+            if (!frame.quality.inputValid)
+            {
+                HeldInputFrames++;
+                PoseApplyStatus = "SMV2 inputValid=false; holding previous pose";
+                return;
+            }
             if (!IsRuntimeReady)
             {
                 if (characterPrefab == null)
                     LastError = "Character prefab is not assigned on Smpl0901LivePlayer.";
+                PoseApplyStatus = "character rig is not ready";
                 return;
             }
             if (frame.body.pose == null || frame.body.pose.Length != 156)
             {
                 LastError = "Decoded pose does not contain 156 values.";
+                PoseApplyStatus = LastError;
                 return;
             }
 
@@ -542,6 +559,7 @@ namespace SMPL0901Player.Runtime
             if (BoneDebugMode)
             {
                 ApplyIsolatedBoneDebugPose();
+                PoseApplyStatus = "BONE ISOLATION active; full pose paused";
                 return;
             }
 
@@ -558,6 +576,9 @@ namespace SMPL0901Player.Runtime
                     frame.quality.inputValid);
             if (handRetargeter != null && frame.hands != null)
                 handRetargeter.ApplyHands(frame.hands);
+            AppliedPoseFrames++;
+            lastAppliedPoseRealtime = Time.realtimeSinceStartup;
+            PoseApplyStatus = $"applied frame {frame.frameId}";
         }
 
         private void ApplyBodyPose(float[] pose)

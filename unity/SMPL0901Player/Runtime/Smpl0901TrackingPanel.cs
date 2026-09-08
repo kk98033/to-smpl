@@ -101,6 +101,9 @@ namespace SMPL0901Player.Runtime
                 int.TryParse(smv2PortText, out int smv2Port) &&
                 int.TryParse(rsv1PortText, out int rsv1Port))
             {
+                // Starting the normal live player must never leave a hidden
+                // one-bone debug state pausing the complete SMPL pose.
+                player.SetBoneDebugMode(false);
                 player.Reconnect(smv2Port, serverIpText);
                 rawSkeleton.Reconnect(rsv1Port, serverIpText);
             }
@@ -217,7 +220,13 @@ namespace SMPL0901Player.Runtime
                     player.rootMotion.ResetDisplayEuler();
             }
 
-            if (!showDebugDetails) return;
+            if (!showDebugDetails)
+            {
+                GUI.Label(
+                    new Rect(panel.x + 14, panel.y + panel.height - 30f, panel.width - 28, 24f),
+                    BuildPoseStatusMessage(), labelStyle);
+                return;
+            }
 
             string smv2Connection = player != null && player.IsListening ? "LISTENING" : "STOPPED";
             string smv2Age = player == null || float.IsPositiveInfinity(player.SecondsSinceLastPacket)
@@ -260,6 +269,8 @@ namespace SMPL0901Player.Runtime
                 $"Filter: {(string.IsNullOrWhiteSpace(serverIpText) ? "ANY" : serverIpText)}\n" +
                 smv2Transport + "\n" + rawTransport + "\n" + qualityText + "\n" +
                 $"Binding: {(player != null ? player.BindingStatus : "--")}\n" +
+                $"Pose apply: {(player != null ? player.PoseApplyStatus : "--")}; " +
+                $"applied={player?.AppliedPoseFrames ?? 0}, heldInput={player?.HeldInputFrames ?? 0}\n" +
                 $"Player offset: {FormatVector(player != null && player.rootMotion != null ? player.rootMotion.manualOffset : Vector3.zero)}  " +
                 $"Live pose rot: {FormatVector(player != null ? player.livePoseEuler : Vector3.zero)}  " +
                 $"Display rot: {FormatVector(player != null && player.rootMotion != null ? player.rootMotion.displayEuler : Vector3.zero)}  " +
@@ -402,6 +413,32 @@ namespace SMPL0901Player.Runtime
             if (!string.IsNullOrEmpty(rawSkeleton.LastError))
                 return $"<color=#ffb347>DEBUG: RSV1 transport/decode works, but renderer held the frame: {rawSkeleton.LastError}</color>";
             return "<color=#43d17c>DEBUG: both SMV2 and RSV1 are receiving.</color>";
+        }
+
+        private string BuildPoseStatusMessage()
+        {
+            if (player == null || rawSkeleton == null)
+                return "<color=#ff6b6b>POSE: player/receiver missing</color>";
+            if (player.BoneDebugMode)
+                return "<color=#ff6b6b>POSE PAUSED: Bone Isolation Debug is ON</color>";
+            if (!player.IsListening)
+                return "<color=#7dd3fc>POSE: T-pose preview; press Start Receiving</color>";
+
+            bool rawIsFresh = rawSkeleton.ReceivedPackets > 0 &&
+                rawSkeleton.SecondsSinceLastPacket < 2f;
+            bool smv2IsFresh = player.ReceivedPackets > 0 &&
+                player.SecondsSinceLastPacket < 2f;
+            if (rawIsFresh && !smv2IsFresh)
+            {
+                return player.ReceivedPackets == 0
+                    ? "<color=#ffb347>POSE WAITING: RSV1 is live, but no SMV2; bridge may be calibrating/holding fits or sending to the wrong 9095 host</color>"
+                    : "<color=#ffb347>POSE HELD: RSV1 is live but SMV2 became stale; check bridge accepted:false / hold_previous logs</color>";
+            }
+            if (player.AcceptedPackets > 0 && player.AppliedPoseFrames == 0)
+                return $"<color=#ff6b6b>POSE NOT APPLIED: {player.PoseApplyStatus}</color>";
+            if (smv2IsFresh && player.AppliedPoseFrames > 0)
+                return $"<color=#43d17c>POSE LIVE: {player.PoseApplyStatus}, applied={player.AppliedPoseFrames}</color>";
+            return $"<color=#ffb347>POSE WAITING: {player.PoseApplyStatus}</color>";
         }
 
         private static string DisplayIp(string value)
