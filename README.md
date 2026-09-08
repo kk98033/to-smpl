@@ -218,10 +218,37 @@ cd /path/to/digital-twin-pose
 
 播放器採 Hybrid 驅動：SMPL 負責身體與手腕，原始 Hand21 負責手指。Runtime UI 可修改 Server IP 與兩個 Port，並分別開關 SMPL Mesh、SMPL 反推骨架和原始 59 點骨架。完整操作方式見 [`unity/SMPL0901Player/README.md`](unity/SMPL0901Player/README.md)。
 
+### 步驟 4：查看真正的 SMPL Mesh
+
+在既有的 `human-pose` conda 環境安裝 Dashboard：
+
+```bash
+conda run -n human-pose python -m pip install -r requirements-dashboard.txt
+conda run -n human-pose python -m pip install -e . --no-deps
+```
+
+第二行刻意使用 `--no-deps`，避免覆蓋 GX10／DGX Spark 環境已安裝且支援
+GB10 的 PyTorch。
+
+Bridge 必須使用上面的 `--fit-jsonl`。另開一個 shell 啟動：
+
+```bash
+conda run -n human-pose smpl-0901-dashboard \
+  --fit-jsonl artifacts/live/smpl_fit.jsonl \
+  --smpl-dir models \
+  --device cpu \
+  --host 0.0.0.0 \
+  --port 8050
+```
+
+瀏覽器開啟 `http://SERVER_IP:8050`。畫面同時顯示原始 Body17、SMPL24
+關節，以及由當幀 `betas + root_orient + body_pose + translation` 經
+`SMPL_NEUTRAL.pkl` 真正生成的 6890-vertex mesh；不是以骨架線段推測的外型。
+
 ## 專案結構
 
 ```text
-smpl_0901/                 Python 常駐 bridge、fitter 與二進位協定
+smpl_0901/                 Python 常駐 bridge、fitter、mesh dashboard 與二進位協定
 models/                    Body25 regressor 與 SMPL 模型
 unity/SMPL0901Player/      獨立的 SMV2/RSV1 Hybrid Unity 播放器
 unity/CustomSMPL/          舊版播放器參考副本

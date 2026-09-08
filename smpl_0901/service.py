@@ -518,6 +518,18 @@ class Smpl0901Bridge:
             "target_body25": _json_points(target_np),
             "fitted_body25": _json_points(pred_body25),
             "fitted_smpl24": _json_points(pred_smpl24),
+            # These are the exact parameters used for the fitted joints and
+            # Unity SMV2 packet above. The dashboard regenerates the real
+            # 6890-vertex SMPL surface from them instead of inventing a body
+            # surface from joint locations.
+            "smpl_parameters": {
+                "model_type": "smpl",
+                "gender": "neutral",
+                "betas": self.fixed_betas.cpu().numpy().reshape(-1).tolist(),
+                "root_orient": root.tolist(),
+                "body_pose": body.reshape(-1).tolist(),
+                "translation": result.translation[0].cpu().numpy().tolist(),
+            },
             "joint_residual_mm": [
                 None if not np.isfinite(value) else float(value) for value in residuals
             ],
