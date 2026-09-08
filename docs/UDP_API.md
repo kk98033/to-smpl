@@ -184,14 +184,6 @@ elif packet[:4] == b"RSV1":
   "target_body25": [[0.0,0.0,0.0]],
   "fitted_body25": [[0.0,0.0,0.0]],
   "fitted_smpl24": [[0.0,0.0,0.0]],
-  "smpl_parameters": {
-    "model_type": "smpl",
-    "gender": "neutral",
-    "betas": [0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0],
-    "root_orient": [0.0,0.0,0.0],
-    "body_pose": [0.0],
-    "translation": [0.0,0.0,0.0]
-  },
   "joint_residual_mm": [12.3],
   "fit_residual_mm": 31.2,
   "worst_joint_residual_mm": 66.4,
@@ -200,11 +192,7 @@ elif packet[:4] == b"RSV1":
 }
 ~~~
 
-實際關節陣列長度分別是 `59/25/25/24/25/10`，`body_pose` 固定為
-`23*3=69`。`joint_residual_mm` 中未參與目前 profile 的 Body25 關節為
-JSON `null`。Dashboard 的橘色骨架來自 SMPL mesh 經同一 Body25 regressor
-得到的 `fitted_body25`；mesh dashboard 則使用 `smpl_parameters` 和同一模型
-重新執行 SMPL forward pass，顯示真正 vertices/faces。
+實際陣列長度分別是 `59/25/25/24/25/10`。`joint_residual_mm` 中未參與目前 profile 的 Body25 關節為 JSON `null`。Dashboard 的橘色骨架來自 SMPL mesh 經同一 Body25 regressor 得到的 `fitted_body25`，並只顯示目前 profile 實際選取的關節；MPJPE 直接使用 `fit_residual_mm`，不會在瀏覽器內重新擬造骨架。
 
 ## 5. CLI contract
 

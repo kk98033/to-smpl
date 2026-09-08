@@ -16,19 +16,13 @@ dependencies = [
   "chumpy>=0.70",
 ]
 
-[project.optional-dependencies]
-dashboard = [
-  "dash>=2.18,<4",
-  "plotly>=5.24,<7",
-]
-
 [project.scripts]
 smpl-0901-bridge = "smpl_0901.service:main"
 smpl-0901-send = "smpl_0901.sender:main"
-smpl-0901-dashboard = "smpl_0901.dashboard:main"
 
 [tool.setuptools.packages.find]
 include = ["smpl_0901*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+
