@@ -88,7 +88,7 @@ namespace SMPL0901Player.Editor
             raw.requireManualStart = true;
             raw.showTPoseBeforeFirstFrame = true;
             raw.allowedServerIp = "192.168.1.250";
-            raw.useSmplCoordinateConversion = false;
+            raw.useSmplCoordinateConversion = true;
             raw.invertX = true;
             raw.invertY = true;
             raw.invertZ = false;

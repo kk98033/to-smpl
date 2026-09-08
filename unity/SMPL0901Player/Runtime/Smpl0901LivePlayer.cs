@@ -141,6 +141,11 @@ namespace SMPL0901Player.Runtime
             trackingPanel.rawSkeleton = rawSkeleton;
             trackingPanel.directJointBaseline = directJointBaseline;
             rawSkeleton.player = this;
+            // Current to-smpl uses the proper right-handed x,-y,-z input map.
+            // RSV1 is deliberately pre-map, so its Unity renderer must apply
+            // the matching proper-map/SUP point basis rather than the legacy
+            // reflected x,-y,z fallback.
+            rawSkeleton.useSmplCoordinateConversion = true;
             directJointBaseline.player = this;
             directJointBaseline.rawSkeleton = rawSkeleton;
             if (string.IsNullOrWhiteSpace(rawSkeleton.allowedServerIp))

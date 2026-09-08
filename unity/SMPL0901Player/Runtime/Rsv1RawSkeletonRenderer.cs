@@ -40,11 +40,11 @@ namespace SMPL0901Player.Runtime
         public float handLineWidth = 0.006f;
 
         [Header("Raw source to Unity")]
-        [Tooltip("Use the same basis as bridge x,-y,z followed by SUP Maya/SMPL to Unity conversion: raw (x,y,z) -> Unity (-x,z,y).")]
-        public bool useSmplCoordinateConversion = false;
+        [Tooltip("Use bridge proper rotation x,-y,-z followed by SUP SMPL-to-Unity point conversion: raw (x,y,z) -> Unity (-x,-z,y).")]
+        public bool useSmplCoordinateConversion = true;
         [Tooltip("Optional correction after the exact SMPL-to-Unity basis conversion.")]
         public Vector3 rotationOffset = Vector3.zero;
-        [Tooltip("Matches bridge default axis x,-y,z plus Unity handedness conversion.")]
+        [Tooltip("Legacy manual-axis fallback. Ignored when Use Smpl Coordinate Conversion is enabled.")]
         public bool invertX = true;
         public bool invertY = true;
         public bool invertZ = false;
@@ -415,10 +415,13 @@ namespace SMPL0901Player.Runtime
                 Vector3 pos;
                 if (useSmplCoordinateConversion)
                 {
-                    // RSV1 contains original camera points. The bridge fits
-                    // (x,-y,z); SUP renders that SMPL coordinate as (-x,z,-y),
-                    // therefore the direct raw-to-Unity mapping is (-x,z,y).
-                    pos = new Vector3(-x, z, y) * scale;
+                    // RSV1 contains the original camera points. The current
+                    // bridge first applies the proper (determinant +1) map
+                    // S=(x,-y,-z). SUP's authored SMPL point basis is
+                    // U=(-S.x,S.z,-S.y), hence raw -> (-x,-z,y).
+                    // Keep the whole-pose rotationOffset separate, exactly as
+                    // Smpl0901LivePlayer keeps livePoseEuler above the rig.
+                    pos = new Vector3(-x, -z, y) * scale;
                 }
                 else
                 {

@@ -425,6 +425,8 @@ class ProtocolTests(unittest.TestCase):
         self.assertIn("new Vector3(-90f, 0f, 0f)", player)
         self.assertIn("Quaternion.Euler(supRigPelvisEuler)", player)
         self.assertIn("invertX ? -x : x", raw)
+        self.assertIn("public bool useSmplCoordinateConversion = true", raw)
+        self.assertIn("new Vector3(-x, -z, y)", raw)
         root_motion = (unity_root / "Runtime" / "Smpl0901RootMotionDriver.cs").read_text(
             encoding="utf-8"
         )
