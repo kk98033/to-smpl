@@ -38,6 +38,10 @@ REASON_BITS = {
     "joint_residual": 1 << 6,
     "max_joint_residual": 1 << 7,
     "torso_orientation": 1 << 8,
+    "twist": 1 << 9,
+    "delta": 1 << 10,
+    "facing_mismatch": 1 << 11,
+    "fit_residual": 1 << 12,
 }
 
 # No native alignment ("<"). The B quality flag is intentionally unpadded.
@@ -57,7 +61,8 @@ def _floats(values: Iterable[float], count: int, field: str) -> list[float]:
 def _reason_mask(reasons: Iterable[str]) -> int:
     mask = 0
     for reason in reasons:
-        mask |= REASON_BITS.get(str(reason), 0)
+        key = str(reason).split(">", 1)[0]
+        mask |= REASON_BITS.get(key, 0)
     return mask
 
 

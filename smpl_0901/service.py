@@ -74,10 +74,11 @@ class CalibrationPending(RuntimeError):
 
 
 class UnsafeFit(RuntimeError):
-    """Candidate pose exceeded a safety threshold and must not reach Unity."""
+    """Candidate exceeded a safety threshold and must not advance accepted state."""
 
-    def __init__(self, diagnostic: dict[str, object]) -> None:
+    def __init__(self, diagnostic: dict[str, object], packet: bytes | None = None) -> None:
         self.diagnostic = diagnostic
+        self.packet = packet
         super().__init__(", ".join(diagnostic["reasons"]))
 
 
@@ -757,16 +758,20 @@ class Smpl0901Bridge:
                 "rightConfidence": (right_conf if right_ok else np.zeros(21)).tolist(),
             },
             "quality": {
-                "inputValid": True,
+                "inputValid": not bool(safety_reasons),
                 "inputScore": input_score,
                 "fitResidualMm": residual,
                 "worstJointResidualMm": float(np.nanmax(residuals)),
                 "torsoOrientationDeg": torso_deg,
-                "solverState": "TRACKING" if residual < 50.0 and torso_deg < 10.0 else "RECOVERED",
+                "solverState": (
+                    "FAILED_HOLD" if safety_reasons else
+                    "TRACKING" if residual < 50.0 and torso_deg < 10.0 else "RECOVERED"
+                ),
                 "stepsUsed": self.args.iterations,
-                "reasons": [],
+                "reasons": safety_reasons,
             },
         }
+        candidate_packet = pack_protocol_v2_frame(packet_frame)
         factory59_relative = frame.joints - pelvis_world
         self.last_fit_record = {
             "schema": "smpl-0901.fit/v1",
@@ -842,12 +847,12 @@ class Smpl0901Bridge:
                 "worst_twist": pose_diagnostics["worst_twist"],
                 "worst_delta": pose_diagnostics["worst_delta"],
                 "warning_joints": pose_diagnostics["warning_joints"],
-            })
+            }, candidate_packet)
 
         self.prev_root = result.root_orient
         self.prev_body = result.body_pose
         self.prev_translation = result.translation
-        return pack_protocol_v2_frame(packet_frame), residual
+        return candidate_packet, residual
 
     def send(self, packet: bytes) -> None:
         self.sock.sendto(packet, (self.args.unity_host, self.args.unity_port))
@@ -987,7 +992,7 @@ def main() -> int:
             f"[bridge] mesh preview={args.mesh_preview_json} "
             f"faces={args.mesh_preview_faces}"
         )
-    received = sent = held = dropped = raw_sent = raw_dropped = 0
+    received = sent = held = candidate_sent = dropped = raw_sent = raw_dropped = 0
     try:
         for record in iter_json_records(args.input):
             received += 1
@@ -1047,7 +1052,7 @@ def main() -> int:
                     fit_fps = 1000.0 / fit_ms if fit_ms > 0 else 0.0
                     print(
                         f"[bridge] received={received} sent={sent} raw_sent={raw_sent} "
-                        f"raw_dropped={raw_dropped} held={held} dropped={dropped} "
+                        f"raw_dropped={raw_dropped} held={held} candidate_sent={candidate_sent} dropped={dropped} "
                         f"residual={residual:.1f} mm fit_ms={fit_ms:.1f} "
                         f"fit_fps={fit_fps:.2f}"
                     )
@@ -1056,6 +1061,10 @@ def main() -> int:
                 print(f"[bridge] {error}")
             except UnsafeFit as error:
                 held += 1
+                if error.packet is not None:
+                    bridge.send(error.packet)
+                    candidate_sent += 1
+                    error.diagnostic["candidate_udp_sent"] = True
                 if fit_stream is not None and bridge.last_fit_record is not None:
                     fit_stream.write(json.dumps(bridge.last_fit_record, allow_nan=False) + "\n")
                     fit_stream.flush()

@@ -23,7 +23,8 @@ namespace SMPL0901Player.Runtime
         {
             "non_finite", "coordinate_range", "torso_length", "left_right_asymmetry",
             "bone_length_outlier", "joint_speed", "joint_residual",
-            "max_joint_residual", "torso_orientation"
+            "max_joint_residual", "torso_orientation", "twist", "delta",
+            "facing_mismatch", "fit_residual"
         };
 
         public static bool TryDecode(byte[] data, out ProtocolV2Frame frame, out string error)

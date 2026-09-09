@@ -34,6 +34,10 @@ namespace SMPL0901Player.Runtime
         [Tooltip("Optional source-IP filter. Empty accepts SMV2 from any host.")]
         public string allowedServerIp = "192.168.1.250";
 
+        [Header("Rejected fit preview")]
+        [Tooltip("Apply inputValid=false SMV2 candidates so Unity mirrors the Dashboard debug mesh. Disable for strict production hold behavior.")]
+        public bool applyRejectedCandidates = true;
+
         [Header("Hybrid drivers")]
         public Smpl0901RootMotionDriver rootMotion;
         public Smpl0901RawHandRetargeter handRetargeter;
@@ -51,6 +55,7 @@ namespace SMPL0901Player.Runtime
         public long IgnoredPackets => Interlocked.Read(ref ignoredPackets);
         public long AppliedPoseFrames { get; private set; }
         public long HeldInputFrames { get; private set; }
+        public long AppliedRejectedPoseFrames { get; private set; }
         public string PoseApplyStatus { get; private set; } = "waiting for SMV2";
         public float ReceiveFps { get; private set; }
         public string LastError { get; private set; } = string.Empty;
@@ -535,11 +540,15 @@ namespace SMPL0901Player.Runtime
             LatestFrameId = frame.frameId;
             if (trackingPanel != null) trackingPanel.SetFrame(frame);
 
-            if (!frame.quality.inputValid)
+            bool rejectedCandidate = !frame.quality.inputValid;
+            if (rejectedCandidate)
             {
                 HeldInputFrames++;
-                PoseApplyStatus = "SMV2 inputValid=false; holding previous pose";
-                return;
+                if (!applyRejectedCandidates)
+                {
+                    PoseApplyStatus = "SMV2 rejected candidate; strict hold enabled";
+                    return;
+                }
             }
             if (!IsRuntimeReady)
             {
@@ -573,12 +582,15 @@ namespace SMPL0901Player.Runtime
                 rootMotion.ApplyFrame(
                     frame.body.rootPosition,
                     frame.body.rootConfidence,
-                    frame.quality.inputValid);
+                    !rejectedCandidate || applyRejectedCandidates);
             if (handRetargeter != null && frame.hands != null)
                 handRetargeter.ApplyHands(frame.hands);
             AppliedPoseFrames++;
+            if (rejectedCandidate) AppliedRejectedPoseFrames++;
             lastAppliedPoseRealtime = Time.realtimeSinceStartup;
-            PoseApplyStatus = $"applied frame {frame.frameId}";
+            PoseApplyStatus = rejectedCandidate
+                ? $"applied Dashboard candidate {frame.frameId} (safety rejected)"
+                : $"applied accepted frame {frame.frameId}";
         }
 
         private void ApplyBodyPose(float[] pose)

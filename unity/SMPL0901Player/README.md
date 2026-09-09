@@ -38,7 +38,11 @@ Debug 區會顯示 Unity 本機 IPv4、兩個 bind endpoint、最後觀察到與
 - 身體只套 SMPL pose index `0..21`；finger pose slots 不會覆蓋 Hand21。
 - 手部沿用 `main/0818meeting` 的 hybrid `RawHandRetargeter`：wrist-local Hand21、ROM 關節限制、自適應平滑與低信心回 rest pose。
 - Unity 主執行緒只套用接收執行緒留下的最新 frame，避免延遲持續累積。
-- `quality.inputValid=false` 時保持上一個有效姿勢。
+- Bridge 也會送出 Dashboard 所顯示的安全門檻失敗候選姿勢，封包以
+  `quality.inputValid=false`、`solverState=FAILED_HOLD` 及 `reasons` 清楚標記。
+- Runtime UI 的 `Show Held Fit` 預設開啟：Unity 會套用這個候選姿勢，因此
+  Unity mesh 與 Dashboard 的 SMPL mesh 使用同一份擬合結果。關閉後即為正式
+  嚴格模式，遇到 `inputValid=false` 時保持上一個通過安全門檻的姿勢。
 
 ## 座標校正
 

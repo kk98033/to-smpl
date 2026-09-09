@@ -209,7 +209,7 @@ elif packet[:4] == b"RSV1":
 
 ## 4.2 SMPL mesh 除錯快照（檔案介面）
 
-`--mesh-preview-json PATH` 以 atomic replace 維護最新擬合候選 frame，不是 UDP，也不是 append-only log。`accepted` 表示此候選是否通過安全門檻並送往 Unity；`faces` 使用 compact vertex indices；`source_vertex_count` 保留完整 SMPL surface 頂點數，`vertices` 只包含被抽樣 faces 引用的點。
+`--mesh-preview-json PATH` 以 atomic replace 維護最新擬合候選 frame，不是 UDP，也不是 append-only log。`accepted` 表示此候選是否通過安全門檻；所有候選均會以 SMV2 送往 Unity，未通過者以 `inputValid=false`、`FAILED_HOLD` 與 reason bit mask 標記。`faces` 使用 compact vertex indices；`source_vertex_count` 保留完整 SMPL surface 頂點數，`vertices` 只包含被抽樣 faces 引用的點。
 
 ~~~json
 {
@@ -228,7 +228,7 @@ elif packet[:4] == b"RSV1":
 
 Dashboard 透過受 token 保護的 `GET /api/smpl-mesh` 按需取得此快照。預設以 vertex clustering 簡化至最多 2400 triangles，目的是確認 server-side SMPL surface 與 fitted joints 是否同幀、同座標；它不是 Unity 最終材質或 skinning 畫面。
 
-Bridge 會依 `--diagnostic-log-every` 定期在 stdout 輸出單行 `[bridge] distortion {JSON}`，schema 為 `smpl-0901.distortion-log/v1`。內容包含 `accepted`、`action`、`reasons`、`fit_residual_mm`、`fit_elapsed_ms`、`fit_iterations`、`torso_orientation_deg`、`worst_target_joint`、`worst_rotation`、`worst_twist`、`worst_delta` 與 `warning_joints`。`accepted:false` 表示候選姿勢被安全門檻攔截，SMV2 不送出並讓 Unity 保留上一個正常姿勢；fit/mesh 診斷仍更新，Dashboard 會動態顯示並標記該候選。`body_facing_mismatch_deg` 是輸入上半身前向與 SMPL 雙腳掌水平前向的夾角，超過 90°代表上下半身前後相反。pelvis 的絕對旋轉代表人物朝向，不列入 rotation distortion；pelvis 的單幀 delta 仍會檢查。
+Bridge 會依 `--diagnostic-log-every` 定期在 stdout 輸出單行 `[bridge] distortion {JSON}`，schema 為 `smpl-0901.distortion-log/v1`。內容包含 `accepted`、`action`、`reasons`、`fit_residual_mm`、`fit_elapsed_ms`、`fit_iterations`、`torso_orientation_deg`、`worst_target_joint`、`worst_rotation`、`worst_twist`、`worst_delta` 與 `warning_joints`。`accepted:false` 表示候選姿勢被安全門檻攔截，不更新 Bridge 的已接受 fitting 狀態；SMV2 仍會送出，但 `inputValid=false`、`solverState=FAILED_HOLD`，reason mask 會包含 `twist`、`delta`、`facing_mismatch` 或 `fit_residual`。新版 Unity 預設將它當 Dashboard 候選顯示；關閉 `Show Held Fit` 後才會保留上一個正常姿勢。`body_facing_mismatch_deg` 是輸入上半身前向與 SMPL 雙腳掌水平前向的夾角，超過 90°代表上下半身前後相反。pelvis 的絕對旋轉代表人物朝向，不列入 rotation distortion；pelvis 的單幀 delta 仍會檢查。
 
 ## 5. CLI contract
 

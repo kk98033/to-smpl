@@ -265,14 +265,14 @@ class ProtocolTests(unittest.TestCase):
                 "rightConfidence": [1.0] * 21,
             },
             "quality": {
-                "inputValid": True,
+                "inputValid": False,
                 "inputScore": 1.0,
                 "fitResidualMm": 12.0,
                 "worstJointResidualMm": 20.0,
                 "torsoOrientationDeg": 2.0,
-                "solverState": "TRACKING",
+                "solverState": "FAILED_HOLD",
                 "stepsUsed": 100,
-                "reasons": [],
+                "reasons": ["twist>100deg", "fit_residual>100mm"],
             },
         }
         packet = pack_protocol_v2_frame(frame)
@@ -280,6 +280,9 @@ class ProtocolTests(unittest.TestCase):
         decoded = unpack_protocol_v2_frame(packet)
         self.assertEqual(decoded["frameId"], 42)
         self.assertEqual(decoded["protocolVersion"], 2)
+        self.assertFalse(decoded["quality"]["inputValid"])
+        self.assertEqual(decoded["quality"]["solverState"], "FAILED_HOLD")
+        self.assertEqual(decoded["quality"]["reasonMask"], (1 << 9) | (1 << 12))
 
     def test_raw_skeleton_v1_round_trip_stays_below_mtu(self):
         points = np.arange(59 * 3, dtype=np.float32).reshape(59, 3)
@@ -422,10 +425,16 @@ class ProtocolTests(unittest.TestCase):
         self.assertIn("Apply received joints 0..selected", panel)
         self.assertIn("DebugApplyReceivedThroughSelected", player)
         self.assertIn("AppliedPoseFrames", player)
+        self.assertIn("AppliedRejectedPoseFrames", player)
+        self.assertIn("applyRejectedCandidates", player)
+        self.assertIn("applied Dashboard candidate", player)
+        service = (Path(__file__).parents[1] / "smpl_0901" / "service.py").read_text(encoding="utf-8")
+        self.assertIn("bridge.send(error.packet)", service)
+        self.assertIn("candidate_udp_sent", service)
         self.assertIn("PoseApplyStatus", player)
         self.assertIn("player.SetBoneDebugMode(false)", panel)
-        self.assertIn("POSE HELD", panel)
-        self.assertIn("accepted:false / hold_previous", panel)
+        self.assertIn("Show Held Fit", panel)
+        self.assertIn("POSE DEBUG", panel)
         self.assertIn("BindingStatus", player)
         self.assertIn("new Vector3(-90f, 0f, 0f)", player)
         self.assertIn("Quaternion.Euler(supRigPelvisEuler)", player)

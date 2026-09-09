@@ -58,6 +58,7 @@ namespace SMPL0901Player.Editor
             player.listenOnStart = false;
             player.requireManualStart = true;
             player.allowedServerIp = "192.168.1.250";
+            player.applyRejectedCandidates = true;
             player.supRigPelvisEuler = new Vector3(-90f, 0f, 0f);
             player.pelvisCorrectionEuler = Vector3.zero;
             player.livePoseEuler = new Vector3(0f, 0f, 90f);

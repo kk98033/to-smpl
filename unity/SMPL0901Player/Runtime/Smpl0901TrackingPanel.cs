@@ -94,6 +94,12 @@ namespace SMPL0901Player.Runtime
             GUI.Label(new Rect(panel.x + 420, configY, 72, 24), "RSV1 port");
             rsv1PortText = GUI.TextField(
                 new Rect(panel.x + 490, configY, 65, 24), rsv1PortText ?? "9096");
+            if (player != null)
+            {
+                player.applyRejectedCandidates = GUI.Toggle(
+                    new Rect(panel.x + 568, configY, 112, 24),
+                    player.applyRejectedCandidates, "Show Held Fit");
+            }
 
             float buttonY = configY + 31f;
             if (GUI.Button(new Rect(panel.x + 14, buttonY, 145, 26), "Start Receiving") &&
@@ -246,7 +252,8 @@ namespace SMPL0901Player.Runtime
                     $"Frame: {latest.frameId} / State: <color={color}>{quality.solverState}</color>\n" +
                     $"Input: {quality.inputValid} / {quality.inputScore:F2}\n" +
                     $"Residual: {quality.fitResidualMm:F1} mm (worst {quality.worstJointResidualMm:F1})\n" +
-                    $"Torso: {quality.torsoOrientationDeg:F1} deg / Steps: {quality.stepsUsed}";
+                    $"Torso: {quality.torsoOrientationDeg:F1} deg / Steps: {quality.stepsUsed}\n" +
+                    $"Safety: {(quality.reasons != null && quality.reasons.Length > 0 ? string.Join(", ", quality.reasons) : "accepted")}";
             }
             string smv2Transport = player == null ? "SMV2 player missing" :
                 $"SMV2 {player.BoundEndpoint}  {smv2Connection}  {player.ReceiveFps:F1} FPS  age {smv2Age}\n" +
@@ -270,7 +277,8 @@ namespace SMPL0901Player.Runtime
                 smv2Transport + "\n" + rawTransport + "\n" + qualityText + "\n" +
                 $"Binding: {(player != null ? player.BindingStatus : "--")}\n" +
                 $"Pose apply: {(player != null ? player.PoseApplyStatus : "--")}; " +
-                $"applied={player?.AppliedPoseFrames ?? 0}, heldInput={player?.HeldInputFrames ?? 0}\n" +
+                $"applied={player?.AppliedPoseFrames ?? 0}, rejectedSeen={player?.HeldInputFrames ?? 0}, " +
+                $"rejectedApplied={player?.AppliedRejectedPoseFrames ?? 0}\n" +
                 $"Player offset: {FormatVector(player != null && player.rootMotion != null ? player.rootMotion.manualOffset : Vector3.zero)}  " +
                 $"Live pose rot: {FormatVector(player != null ? player.livePoseEuler : Vector3.zero)}  " +
                 $"Display rot: {FormatVector(player != null && player.rootMotion != null ? player.rootMotion.displayEuler : Vector3.zero)}  " +
@@ -412,6 +420,13 @@ namespace SMPL0901Player.Runtime
                 return "<color=#ffb347>DEBUG: SMV2 arrives, but no RSV1 on 9096. Check the raw-skeleton sender destination.</color>";
             if (!string.IsNullOrEmpty(rawSkeleton.LastError))
                 return $"<color=#ffb347>DEBUG: RSV1 transport/decode works, but renderer held the frame: {rawSkeleton.LastError}</color>";
+            if (latest != null && latest.quality != null && !latest.quality.inputValid)
+            {
+                string action = player.applyRejectedCandidates
+                    ? "displaying the rejected Dashboard candidate"
+                    : "strict hold is keeping the last accepted pose";
+                return $"<color=#ffb347>DEBUG: both streams receive; safety gate rejected this fit, {action}.</color>";
+            }
             return "<color=#43d17c>DEBUG: both SMV2 and RSV1 are receiving.</color>";
         }
 
@@ -436,6 +451,9 @@ namespace SMPL0901Player.Runtime
             }
             if (player.AcceptedPackets > 0 && player.AppliedPoseFrames == 0)
                 return $"<color=#ff6b6b>POSE NOT APPLIED: {player.PoseApplyStatus}</color>";
+            if (smv2IsFresh && latest != null && latest.quality != null &&
+                !latest.quality.inputValid && player.applyRejectedCandidates)
+                return $"<color=#ffb347>POSE DEBUG: {player.PoseApplyStatus}, rejectedApplied={player.AppliedRejectedPoseFrames}</color>";
             if (smv2IsFresh && player.AppliedPoseFrames > 0)
                 return $"<color=#43d17c>POSE LIVE: {player.PoseApplyStatus}, applied={player.AppliedPoseFrames}</color>";
             return $"<color=#ffb347>POSE WAITING: {player.PoseApplyStatus}</color>";
