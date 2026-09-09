@@ -43,6 +43,7 @@ Debug 區會顯示 Unity 本機 IPv4、兩個 bind endpoint、最後觀察到與
 - Runtime UI 的 `Show Held Fit` 預設開啟：Unity 會套用這個候選姿勢，因此
   Unity mesh 與 Dashboard 的 SMPL mesh 使用同一份擬合結果。關閉後即為正式
   嚴格模式，遇到 `inputValid=false` 時保持上一個通過安全門檻的姿勢。
+- 新版 SUP prefab 的 SMPL axis-angle 會以每根骨頭原始 bind rotation 為基準套用。這能確保零旋轉仍等於 prefab T-pose，避免收到第一幀後因清除 authored local bone basis 而扭曲。`applyPoseRelativeToBind` 預設開啟；只有舊式 identity-local-rotation rig 才應關閉。
 
 ## 座標校正
 

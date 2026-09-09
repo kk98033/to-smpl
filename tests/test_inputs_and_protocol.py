@@ -427,6 +427,12 @@ class ProtocolTests(unittest.TestCase):
         self.assertIn("AppliedPoseFrames", player)
         self.assertIn("AppliedRejectedPoseFrames", player)
         self.assertIn("applyRejectedCandidates", player)
+        self.assertIn("applyPoseRelativeToBind", player)
+        self.assertIn("PoseBaseRotation(poseIndex, boneIndex)", player)
+        apply_body = player.split("private void ApplyBodyPose", 1)[1].split(
+            "private Quaternion PoseBaseRotation", 1
+        )[0]
+        self.assertNotIn("bone.localRotation = Quaternion.identity", apply_body)
         self.assertIn("applied Dashboard candidate", player)
         service = (Path(__file__).parents[1] / "smpl_0901" / "service.py").read_text(encoding="utf-8")
         self.assertIn("bridge.send(error.packet)", service)

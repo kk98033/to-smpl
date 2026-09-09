@@ -62,6 +62,7 @@ namespace SMPL0901Player.Editor
             player.supRigPelvisEuler = new Vector3(-90f, 0f, 0f);
             player.pelvisCorrectionEuler = Vector3.zero;
             player.livePoseEuler = new Vector3(0f, 0f, 90f);
+            player.applyPoseRelativeToBind = true;
             player.rootMotion = root;
             player.handRetargeter = hands;
             player.trackingPanel = panel;

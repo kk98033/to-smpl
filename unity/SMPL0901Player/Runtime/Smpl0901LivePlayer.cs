@@ -25,6 +25,8 @@ namespace SMPL0901Player.Runtime
         [Tooltip("Whole received pose orientation. Applied to the character root, never to an individual bone.")]
         public Vector3 livePoseEuler = new Vector3(0f, 0f, 90f);
         public bool renderCharacter = true;
+        [Tooltip("Apply SMPL axis-angle as a delta from each prefab bone bind rotation. Disable only for legacy SUP rigs authored with identity local rotations.")]
+        public bool applyPoseRelativeToBind = true;
 
         [Header("SMV2 UDP")]
         public int listenPort = 9095;
@@ -603,18 +605,12 @@ namespace SMPL0901Player.Runtime
                 Transform bone = bones[boneIndex];
                 if (bone == null || poseIndex * 3 + 2 >= pose.Length) continue;
 
-                // Match the legacy RealtimePipelinePlayer exactly. SUP's
-                // runtime rig expects an identity local pose every frame;
-                // authored bind rotations must not be accumulated here.
-                bone.localRotation = Quaternion.identity;
+                // SMPL rotations are deltas from the model rest pose. New SUP
+                // prefabs can have non-identity authored local bone bases;
+                // discarding them twists the skinned mesh even when pose=zero.
+                bone.localRotation = PoseBaseRotation(poseIndex, boneIndex);
                 if (bone.name == Bones.Pelvis)
                 {
-                    // Match SUP CharacterPoser exactly: its exported SMPL-H
-                    // pelvis requires -90 degrees around X before the converted
-                    // SMPL root rotation. User/source correction is a separate
-                    // output-space rotation and must not replace this step.
-                    bone.localRotation = Quaternion.Euler(pelvisCorrectionEuler) *
-                        Quaternion.Euler(supRigPelvisEuler);
                     Vector3 bindPosition = bindLocalPositions != null &&
                         boneIndex < bindLocalPositions.Length
                         ? bindLocalPositions[boneIndex] : Vector3.zero;
@@ -632,6 +628,21 @@ namespace SMPL0901Player.Runtime
                     new Vector3(x, y, z) / radians);
                 bone.localRotation *= axisAngle.ToLeftHanded();
             }
+        }
+
+        private Quaternion PoseBaseRotation(int poseIndex, int boneIndex)
+        {
+            if (applyPoseRelativeToBind && bindLocalRotations != null &&
+                boneIndex >= 0 && boneIndex < bindLocalRotations.Length)
+            {
+                Quaternion correction = poseIndex == 0
+                    ? Quaternion.Euler(pelvisCorrectionEuler)
+                    : Quaternion.identity;
+                return bindLocalRotations[boneIndex] * correction;
+            }
+            return poseIndex == 0
+                ? Quaternion.Euler(pelvisCorrectionEuler) * Quaternion.Euler(supRigPelvisEuler)
+                : Quaternion.identity;
         }
 
         private Transform GetBodyBone(int poseIndex)
@@ -653,10 +664,8 @@ namespace SMPL0901Player.Runtime
             {
                 Transform bone = GetBodyBone(poseIndex);
                 if (bone == null) continue;
-                bone.localRotation = poseIndex == 0
-                    ? Quaternion.Euler(supRigPelvisEuler)
-                    : Quaternion.identity;
                 int boneIndex = bodyBoneIndices[poseIndex];
+                bone.localRotation = PoseBaseRotation(poseIndex, boneIndex);
                 if (poseIndex == 0 && bindLocalPositions != null && boneIndex < bindLocalPositions.Length)
                     bone.localPosition = bindLocalPositions[boneIndex] + pelvisLocalOffset;
             }
