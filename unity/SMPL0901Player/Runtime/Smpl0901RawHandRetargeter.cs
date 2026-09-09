@@ -16,6 +16,8 @@ namespace SMPL0901Player.Runtime
         public float rotationSmoothing = 18f;
         public int holdFrames = 5;
         public float relaxSpeed = 4f;
+        [Tooltip("Apply Hand21 finger rotations as deltas from each SUP finger bind rotation.")]
+        public bool applyFingerDeltasFromBind = true;
 
         public int LeftMappedBones { get; private set; }
         public int RightMappedBones { get; private set; }
@@ -206,6 +208,9 @@ namespace SMPL0901Player.Runtime
                 }
 
                 Vector3 semanticDirection = localDirection.normalized;
+                if (enableJointLimits)
+                    semanticDirection = ClampSemanticDirection(
+                        semanticDirection, segment.fingerIndex, segment.segmentIndex, segment.isLeft);
 
                 // Apply anatomical Euler Hinge rotations matching SMPL-H rig (CustomAnimationPlayer standard)
                 Quaternion targetRotation;
@@ -249,6 +254,9 @@ namespace SMPL0901Player.Runtime
                         targetRotation = Quaternion.Euler(thumbFlex * 0.25f, thumbFlex, -thumbAbd);
                     }
                 }
+
+                if (applyFingerDeltasFromBind)
+                    targetRotation = segment.bindLocalRotation * targetRotation;
 
                 // Calculate smoothing rate
                 float currentBlend;

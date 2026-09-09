@@ -6,6 +6,7 @@ import unittest
 from pathlib import Path
 
 import numpy as np
+import torch
 
 from smpl_0901.protocol_v2_udp import (
     PACKET_SIZE,
@@ -17,9 +18,13 @@ from smpl_0901.raw_skeleton_udp import (
     pack_raw_skeleton_frame,
     unpack_raw_skeleton_frame,
 )
+from smpl_0901.fixed_betas_fitter import zero_pose_components_
+
 from smpl_0901.service import (
     FACTORY_IDS,
     FIT_PROFILES,
+    FORWARD_LOCK_BODY_POSE_INDICES,
+    SPINE_BODY_POSE_INDICES,
     body25_confidence_from_factory59,
     body_facing_mismatch_deg,
     body25_from_factory59,
@@ -148,6 +153,18 @@ class InputContractTests(unittest.TestCase):
         self.assertEqual(left.shape, (21, 3))
         self.assertEqual(right.shape, (21, 3))
         np.testing.assert_allclose(body[1], (points[5] + points[6]) * 0.5)
+
+    def test_forward_locks_zero_neck_head_and_wrists(self):
+        self.assertEqual(SPINE_BODY_POSE_INDICES, (2, 5, 8))
+        self.assertEqual(FORWARD_LOCK_BODY_POSE_INDICES, (11, 14, 19, 20))
+        body = torch.ones((1, 69), dtype=torch.float32)
+        zero_pose_components_(body, FORWARD_LOCK_BODY_POSE_INDICES)
+        reshaped = body.reshape(1, 23, 3)
+        for index in FORWARD_LOCK_BODY_POSE_INDICES:
+            self.assertTrue(torch.equal(reshaped[:, index], torch.zeros((1, 3))))
+        self.assertTrue(torch.equal(reshaped[:, 2], torch.ones((1, 3))))
+        with self.assertRaisesRegex(ValueError, "0..22"):
+            zero_pose_components_(body, (23,))
 
     def test_upper_body_profile_stops_before_occluded_legs(self):
         self.assertEqual(FIT_PROFILES["upper-body"], tuple(range(10)) + (12,))
@@ -406,6 +423,8 @@ class ProtocolTests(unittest.TestCase):
         self.assertIn("ShowPreviewTPose", raw)
         self.assertIn("public bool requireManualStart = true", raw)
         self.assertIn("segment.bone.localRotation, targetRotation", hands)
+        self.assertIn("segment.bindLocalRotation * targetRotation", hands)
+        self.assertIn("ClampSemanticDirection", hands)
         self.assertIn("pelvisCorrectionEuler", player)
         self.assertIn("public bool requireManualStart = true", player)
         self.assertIn("ShowTPose", player)
@@ -440,6 +459,7 @@ class ProtocolTests(unittest.TestCase):
         self.assertIn("PoseApplyStatus", player)
         self.assertIn("player.SetBoneDebugMode(false)", panel)
         self.assertIn("Show Held Fit", panel)
+        self.assertIn("Bind-relative", panel)
         self.assertIn("POSE DEBUG", panel)
         self.assertIn("BindingStatus", player)
         self.assertIn("new Vector3(-90f, 0f, 0f)", player)

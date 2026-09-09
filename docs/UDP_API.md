@@ -98,7 +98,7 @@ Body17 順序為 nose、left/right eye、left/right ear、left/right shoulder、
 | 1381 | 4 | int32 | fitting steps used |
 | 1385 | 4 | uint32 | reason bit mask |
 
-目前 SMPL body rotation 寫入 pose 前 66 floats，其餘 pose slots 保留為 0；手指由左右 Hand21 wrist-local 資料獨立驅動。
+目前 SMPL body rotation 寫入 pose 前 66 floats，其餘 pose slots 保留為 0。neck、head 與左右 wrist local rotation 由 Bridge 固定為自然零旋轉；手指則由左右原始 Hand21 wrist-local 資料獨立驅動。
 
 ### Solver state
 

@@ -55,7 +55,7 @@
 * `--fit-profile full`：使用 Body25 `0..14`，包含髖、膝與腳踝；適合全身清楚可見的資料。
 * `--fit-profile upper-body`：只使用鼻、頸、雙臂與骨盆 Body25 `0..9,12`。膝與腳踝不進 loss，下肢 SMPL rotation 保持上一幀（首次為自然零姿勢），上半身仍持續追蹤。Docker Compose 預設使用此模式。
 * 每個 Body25 target 使用輸入 `reliable/confidence` 加權；有提供品質資料的來源不再讓低可信度關節與可靠關節等權影響 loss。
-* 部署預設 `--endpoint-weight 0.5`、`--torso-weight 0.05`，避免手腕端點或 torso normal 壓過整體關節 loss。
+* 部署預設 `--endpoint-weight 0.5`、`--torso-weight 0.05` 與 `--spine-stability-weight 0.02`。三節 spine 保留彎曲能力但會被拉回自然 rest rotation；neck、head 與左右 wrist 的 local rotation 固定為零，讓頭頸跟隨胸口向前，手掌根節點跟隨前臂，避免關節位置 loss 無法觀測的軸向 twist。
 * `--robust-huber` 可手動啟用，但不作部署預設；本機歷史資料測試顯示 squared loss 收斂較準，Huber 僅適合已確認有少數極端離群點時。
 
 ---
@@ -111,7 +111,7 @@ RSV1 固定為 little-endian、封包大小 **1032 Bytes**，小於標準 Ethern
 ### 真實 SMPL 擬合診斷 JSONL
 
 指定 `--fit-jsonl PATH` 時，Bridge 每個成功的 SMPL frame 會追加一筆 `smpl-0901.fit/v1`。內容包括同一 `frame` 的 `target_factory59`、`target_body25`、實際 SMPL model 的 `fitted_smpl24`、Body25 regressor 的 `fitted_body25`、逐關節 residual 與真實 `fit_residual_mm`。整合 Dashboard 使用這份資料，不再在瀏覽器內用固定骨長偽造 SMPL 骨架。
-每筆診斷也包含最差 Body25 target、SMPL24 local rotation、沿主要子骨軸的 twist、相對上一幀的 geodesic rotation jump、輸入上半身／腳掌水平朝向差與超標關節清單。fitter 另以預設 `SMPL_BODY_FACING_WEIGHT=0.01` 的 facing alignment loss（輸入先以 determinant +1 的 `x,-y,-z` proper rotation 轉換，避免單軸鏡射造成不可解的左右手性），防止 pelvis／腿朝後而上半身反弓來換取低關節位置誤差。
+每筆診斷也包含最差 Body25 target、SMPL24 local rotation、沿主要子骨軸的 twist、相對上一幀的 geodesic rotation jump、輸入上半身／腳掌水平朝向差與超標關節清單。fitter 另以 `SMPL_SPINE_STABILITY_WEIGHT=0.02` 抑制 spine1/2/3 的無法觀測軸向扭轉，並將 neck、head、左右 wrist 固定於相對父關節的自然朝前姿勢；再以預設 `SMPL_BODY_FACING_WEIGHT=0.01` 的 facing alignment loss（輸入先以 determinant +1 的 `x,-y,-z` proper rotation 轉換，避免單軸鏡射造成不可解的左右手性），防止 pelvis／腿朝後而上半身反弓來換取低關節位置誤差。
 
 指定 `--mesh-preview-json PATH` 時，Bridge 會以 atomic replace 維護一份最新候選 frame 的 `smpl-0901.mesh-preview/v1`，包含真正 SMPL forward surface 的 vertex-cluster 簡化後的 compact vertices 與連續 faces，並以 `accepted` 標示是否通過安全門檻。預設 `--mesh-preview-faces 2400`，供 Dashboard 除錯而不讓 append-only JSONL 快速膨脹；此檔案不是 UDP 協定，也不影響 Unity 輸出。
 
@@ -130,8 +130,8 @@ Bridge 預設每 10 個成功 fit 輸出一筆 `[bridge] distortion {JSON}` stru
 ### 核心演算法亮點
 1. **Fixed Betas 體型鎖定**：預設收集 30 個通過目前 profile 品質閘門的 frame，估計一次性身材參數 $\beta$，並將每個係數限制在 `[-3,3]`，避免遮擋點被永久吸收到體型。
 2. **遮擋友善 Soft-Target**：`upper-body` 模式不使用膝／腳踝 target；`full` 模式才對手腕與腳踝增加端點權重。
-3. **軀幹法向量約束 (Torso Normal Constraint)**：計算肩-髖法向量，防止工人背對鏡頭時模型發生前後翻轉。
-4. **Hybrid 混合骨架驅動**：SMPL 驅動全身 24 處關節四元數，`RawHandRetargeter` 驅動 10 根手指原始幾何。
+3. **軀幹法向量與 Spine 穩定**：計算肩-髖法向量，並正則化 spine1/2/3；neck、head 固定朝向胸口前方，避免前後翻轉及沿骨軸扭曲。
+4. **Hybrid 混合骨架驅動**：SMPL 驅動身體至前臂，左右 wrist 使用自然零旋轉跟隨前臂；原始 Hand21 wrist-local 幾何與 ROM 限制驅動 10 根手指。
 
 ---
 
@@ -221,7 +221,7 @@ cd /path/to/digital-twin-pose
 2. 點選 Unity 上方選單：**SMPL 0901 → Create Live Player in Scene**。
 3. 按下 **Play**。播放器預設接受 Server IP `192.168.1.250`，同時監聽 UDP `9095`（SMV2）與 `9096`（RSV1）。
 
-播放器採 Hybrid 驅動：SMPL 負責身體與手腕，原始 Hand21 負責手指。Runtime UI 可修改 Server IP 與兩個 Port，並分別開關 SMPL Mesh、SMPL 反推骨架和原始 59 點骨架。完整操作方式見 [`unity/SMPL0901Player/README.md`](unity/SMPL0901Player/README.md)。
+播放器採 Hybrid 驅動：SMPL 負責身體至前臂，wrist 固定自然 local rotation 跟隨前臂，原始 Hand21 負責手指彎曲與張開。Runtime UI 可修改 Server IP 與兩個 Port，並分別開關 SMPL Mesh、SMPL 反推骨架和原始 59 點骨架。完整操作方式見 [`unity/SMPL0901Player/README.md`](unity/SMPL0901Player/README.md)。
 
 ## 專案結構
 

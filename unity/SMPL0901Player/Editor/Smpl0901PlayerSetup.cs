@@ -79,6 +79,7 @@ namespace SMPL0901Player.Editor
             hands.enableJointLimits = true;
             hands.enableAdaptiveSmoothing = true;
             hands.rotationSmoothing = 20f;
+            hands.applyFingerDeltasFromBind = true;
             panel.player = player;
             panel.fittedSkeleton = fitted;
             panel.rawSkeleton = raw;
@@ -106,7 +107,7 @@ namespace SMPL0901Player.Editor
             baseline.autoScaleToRaw = true;
             panel.visible = true;
             panel.showDebugDetails = false;
-            panel.panelSize = new Vector2(690f, 614f);
+            panel.panelSize = new Vector2(840f, 614f);
 
             if (player.characterPrefab == null)
                 player.characterPrefab = FindSupCharacterPrefab();

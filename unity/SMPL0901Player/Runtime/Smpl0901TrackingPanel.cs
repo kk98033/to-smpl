@@ -49,7 +49,7 @@ namespace SMPL0901Player.Runtime
                 rsv1PortText = rawSkeleton.listenPort.ToString();
             if (localIpv4Text == null) localIpv4Text = FindLocalIpv4Addresses();
 
-            float width = Mathf.Max(690f, panelSize.x);
+            float width = Mathf.Max(840f, panelSize.x);
             float height = showDebugDetails ? Mathf.Max(614f, panelSize.y) : 304f;
             Rect panel = new Rect(screenPosition.x, screenPosition.y, width, height);
             GUI.Box(panel, "SMPL 0901 Live Player");
@@ -82,6 +82,12 @@ namespace SMPL0901Player.Runtime
             showDebugDetails = GUI.Toggle(
                 new Rect(panel.x + 580, toggleY, 100, 24),
                 showDebugDetails, "Show Debug");
+            if (player != null)
+            {
+                player.applyPoseRelativeToBind = GUI.Toggle(
+                    new Rect(panel.x + 690, toggleY, 140, 24),
+                    player.applyPoseRelativeToBind, "Bind-relative");
+            }
 
             float configY = panel.y + 58f;
             GUI.Label(new Rect(panel.x + 14, configY, 82, 24), "Server IP");

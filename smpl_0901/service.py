@@ -54,6 +54,8 @@ FIT_PROFILES = {
     "upper-body": tuple(range(10)) + (12,),
 }
 LOWER_BODY_SMPL_POSE_INDICES = (0, 1, 3, 4, 6, 7, 9, 10)
+SPINE_BODY_POSE_INDICES = (2, 5, 8)  # SMPL joints 3, 6, 9
+FORWARD_LOCK_BODY_POSE_INDICES = (11, 14, 19, 20)  # neck, head, left/right wrist
 
 
 @dataclass(frozen=True)
@@ -684,6 +686,8 @@ class Smpl0901Bridge:
             joint_indices=selected,
             endpoint_weight=self.args.endpoint_weight,
             torso_normal_weight=self.args.torso_weight,
+            spine_stability_weight=self.args.spine_stability_weight,
+            spine_pose_indices=SPINE_BODY_POSE_INDICES,
             body_facing_weight=self.args.body_facing_weight,
             temporal_smooth_weight=self.args.temporal_weight,
             prev_body_pose=self.prev_body,
@@ -695,6 +699,7 @@ class Smpl0901Bridge:
                 LOWER_BODY_SMPL_POSE_INDICES
                 if self.args.fit_profile == "upper-body" else ()
             ),
+            zero_pose_indices=FORWARD_LOCK_BODY_POSE_INDICES,
         )
         pose = np.zeros(156, dtype=np.float32)
         root = result.root_orient[0].cpu().numpy()
@@ -787,6 +792,8 @@ class Smpl0901Bridge:
             "solver": {
                 "endpoint_weight": self.args.endpoint_weight,
                 "torso_weight": self.args.torso_weight,
+                "spine_stability_weight": self.args.spine_stability_weight,
+                "forward_locked_joints": ["neck", "head", "left_wrist", "right_wrist"],
                 "body_facing_weight": self.args.body_facing_weight,
                 "temporal_weight": self.args.temporal_weight,
                 "robust_huber": self.args.robust_huber,
@@ -924,6 +931,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--endpoint-weight", type=float, default=0.5)
     parser.add_argument("--torso-weight", type=float, default=0.05)
     parser.add_argument(
+        "--spine-stability-weight", type=float, default=0.02,
+        help="penalize spine1/2/3 local rotation ambiguity; 0 disables",
+    )
+    parser.add_argument(
         "--body-facing-weight", type=float, default=0.01,
         help="align fitted torso front with the horizontal SMPL feet direction",
     )
@@ -962,6 +973,8 @@ def main() -> int:
         raise ValueError("diagnostic log interval must be non-negative")
     if args.body_facing_weight < 0:
         raise ValueError("body facing weight must be non-negative")
+    if args.spine_stability_weight < 0:
+        raise ValueError("spine stability weight must be non-negative")
     if min(
         args.max_fit_residual_mm, args.max_twist_deg, args.max_delta_deg,
         args.max_facing_mismatch_deg,

@@ -138,6 +138,17 @@ def estimate_fixed_betas(
     return shared_betas.squeeze(0).detach()
 
 
+def zero_pose_components_(body: torch.Tensor, pose_indices: Sequence[int]) -> None:
+    """In-place lock selected SMPL body-pose joints to their forward/rest rotation."""
+    with torch.no_grad():
+        for pose_index in pose_indices:
+            index = int(pose_index)
+            if index < 0 or index >= 23:
+                raise ValueError(f"body pose index must be within 0..22, got {index}")
+            offset = index * 3
+            body[:, offset:offset + 3].zero_()
+
+
 def fit_fixed_betas_soft_target(
     smpl_layer: nn.Module,
     body25_regressor: torch.Tensor,
@@ -153,6 +164,8 @@ def fit_fixed_betas_soft_target(
     endpoint_weight: float = 0.5,
     torso_normal_weight: float = 0.02,
     pose_prior_weight: float = 0.001,
+    spine_stability_weight: float = 0.02,
+    spine_pose_indices: Sequence[int] = (2, 5, 8),
     body_facing_weight: float = 0.0,
     temporal_smooth_weight: float = 0.01,
     prev_body_pose: torch.Tensor | None = None,
@@ -160,6 +173,7 @@ def fit_fixed_betas_soft_target(
     huber_delta: float = 0.05,
     joint_weights: torch.Tensor | None = None,
     frozen_pose_indices: Sequence[int] = (),
+    zero_pose_indices: Sequence[int] = (),
 ) -> FixedBetasFitResult:
     """Fit per-frame rotations with frozen betas and soft endpoint / torso constraints.
 
@@ -178,6 +192,7 @@ def fit_fixed_betas_soft_target(
         body = torch.zeros((batch_size, 23 * 3), device=device, requires_grad=True)
     else:
         body = init_body.clone().detach().to(device).requires_grad_(True)
+    zero_pose_components_(body, zero_pose_indices)
     if init_translation is None:
         translation = torch.zeros((batch_size, 3), device=device, requires_grad=True)
     else:
@@ -287,6 +302,15 @@ def fit_fixed_betas_soft_target(
         # Pose prior
         prior_loss = body.square().mean()
 
+        # Position-only fitting cannot observe axial twist. Keep the three
+        # spine joints near their SMPL rest rotations so twist cannot migrate
+        # into a visually destructive but joint-position-equivalent solution.
+        if spine_pose_indices and spine_stability_weight > 0:
+            spine = body.view(batch_size, 23, 3)[:, list(spine_pose_indices)]
+            spine_loss = spine.square().mean()
+        else:
+            spine_loss = torch.tensor(0.0, device=device)
+
         # Temporal smoothness loss
         if prev_body_pose is not None and temporal_smooth_weight > 0:
             prev = prev_body_pose.to(device).detach()
@@ -300,6 +324,7 @@ def fit_fixed_betas_soft_target(
             + torso_normal_weight * torso_loss
             + body_facing_weight * facing_loss
             + pose_prior_weight * prior_loss
+            + spine_stability_weight * spine_loss
             + temporal_smooth_weight * temporal_loss
         )
         loss.backward()
@@ -308,6 +333,7 @@ def fit_fixed_betas_soft_target(
                 offset = int(pose_index) * 3
                 body.grad[:, offset:offset + 3] = 0.0
         optimizer.step()
+        zero_pose_components_(body, zero_pose_indices)
 
     if device.type == "cuda":
         torch.cuda.synchronize(device)

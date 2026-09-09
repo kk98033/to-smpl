@@ -37,6 +37,7 @@ Debug 區會顯示 Unity 本機 IPv4、兩個 bind endpoint、最後觀察到與
 - 沒有影片播放器、離線 cache 或 playback 分支。
 - 身體只套 SMPL pose index `0..21`；finger pose slots 不會覆蓋 Hand21。
 - 手部沿用 `main/0818meeting` 的 hybrid `RawHandRetargeter`：wrist-local Hand21、ROM 關節限制、自適應平滑與低信心回 rest pose。
+- Bridge 將 neck、head 與左右 wrist 固定為自然 local rotation：頭頸跟隨胸口朝前，手掌根節點跟隨前臂。手指的彎曲與張開仍直接來自原始 59 點中的左右 Hand21，並以 bind-relative delta 套到 SUP finger bones。
 - Unity 主執行緒只套用接收執行緒留下的最新 frame，避免延遲持續累積。
 - Bridge 也會送出 Dashboard 所顯示的安全門檻失敗候選姿勢，封包以
   `quality.inputValid=false`、`solverState=FAILED_HOLD` 及 `reasons` 清楚標記。

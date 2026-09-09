@@ -39,6 +39,7 @@ services:
           --beta-limit "${SMPL_BETA_LIMIT:-3.0}" \
           --endpoint-weight "${SMPL_ENDPOINT_WEIGHT:-0.5}" \
           --torso-weight "${SMPL_TORSO_WEIGHT:-0.05}" \
+          --spine-stability-weight "${SMPL_SPINE_STABILITY_WEIGHT:-0.02}" \
           --body-facing-weight "${SMPL_BODY_FACING_WEIGHT:-0.01}" \
           --max-fit-residual-mm "${SMPL_MAX_FIT_RESIDUAL_MM:-100}" \
           --max-twist-deg "${SMPL_MAX_TWIST_DEG:-100}" \
