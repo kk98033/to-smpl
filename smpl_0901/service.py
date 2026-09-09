@@ -586,6 +586,10 @@ class Smpl0901Bridge:
         self.prev_translation = None
         self.pelvis_anchor = None
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        self.packet_recorder = None
+        if args.record_unity_packets is not None:
+            from .unity_fake_sender import UnityPacketRecorder
+            self.packet_recorder = UnityPacketRecorder(args.record_unity_packets)
         self.raw_destination = (
             args.raw_skeleton_host or args.unity_host, args.raw_skeleton_port
         ) if args.raw_skeleton_port else None
@@ -615,6 +619,8 @@ class Smpl0901Bridge:
             ).astype(np.int32)
 
     def close(self) -> None:
+        if self.packet_recorder is not None:
+            self.packet_recorder.close()
         self.sock.close()
 
     def _calibrate(self) -> None:
@@ -863,6 +869,9 @@ class Smpl0901Bridge:
 
     def send(self, packet: bytes) -> None:
         self.sock.sendto(packet, (self.args.unity_host, self.args.unity_port))
+        recorder = getattr(self, "packet_recorder", None)
+        if recorder is not None:
+            recorder.record("SMV2", packet)
 
     def send_raw_skeleton(self, frame: JointFrame) -> bool:
         if self.raw_destination is None:
@@ -879,6 +888,9 @@ class Smpl0901Bridge:
             ptp_exact=frame.ptp_exact,
         )
         self.sock.sendto(packet, self.raw_destination)
+        recorder = getattr(self, "packet_recorder", None)
+        if recorder is not None:
+            recorder.record("RSV1", packet)
         return True
 
 
@@ -902,6 +914,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--raw-skeleton-port", type=int, default=9096,
         help="RSV1 raw factory-59 UDP port; use 0 to disable",
+    )
+    parser.add_argument(
+        "--record-unity-packets", type=Path,
+        help="overwrite a JSONL capture with exact outgoing SMV2/RSV1 datagrams",
     )
     parser.add_argument("--smpl-dir", type=Path, default=default_smpl_dir())
     parser.add_argument("--device", default="cuda")
@@ -993,6 +1009,8 @@ def main() -> int:
         f"[bridge] Raw skeleton={raw_host}:{args.raw_skeleton_port}"
         if args.raw_skeleton_port else "[bridge] Raw skeleton=disabled"
     )
+    if args.record_unity_packets is not None:
+        print(f"[bridge] Unity packet recording={args.record_unity_packets}")
     bridge = Smpl0901Bridge(args)
     fit_stream = None
     if args.fit_jsonl is not None:

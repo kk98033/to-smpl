@@ -12,6 +12,7 @@ build/
 *.log
 outputs/
 artifacts/
+local_recordings/
 
 # Unity generated folders
 unity/Library/

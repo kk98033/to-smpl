@@ -19,6 +19,7 @@ dependencies = [
 [project.scripts]
 smpl-0901-bridge = "smpl_0901.service:main"
 smpl-0901-send = "smpl_0901.sender:main"
+smpl-0901-unity-fake = "smpl_0901.unity_fake_sender:main"
 
 [tool.setuptools.packages.find]
 include = ["smpl_0901*"]
