@@ -12,7 +12,7 @@
 
 ![工業數位分身即時姿態與 SMPL 系統架構](docs/digital-twin-system-architecture.svg)
 
-公司部署與維運請見 [Docker 部署手冊](docs/DOCKER_DEPLOYMENT.md)；輸入 JSON、SMV2、RSV1 byte offset 與 CLI 合約請見 [UDP API 文件](docs/UDP_API.md)。
+公司部署與維運請見 [Docker 部署手冊](docs/DOCKER_DEPLOYMENT.md)；輸入 JSON、SMV2、RSV1 byte offset 與 CLI 合約請見 [UDP API 文件](docs/UDP_API.md)；不開 Pipeline／Bridge 單獨測 Unity 請見 [Unity Fake Sender](docs/UNITY_FAKE_SENDER.md)。
 
 ---
 
@@ -227,6 +227,7 @@ cd /path/to/digital-twin-pose
 
 ```text
 smpl_0901/                 Python 常駐 bridge、fitter 與二進位協定
+docs/UNITY_FAKE_SENDER.md  Conda 錄製／重播 Unity SMV2 + RSV1
 models/                    Body25 regressor 與 SMPL 模型
 unity/SMPL0901Player/      獨立的 SMV2/RSV1 Hybrid Unity 播放器
 unity/CustomSMPL/          舊版播放器參考副本

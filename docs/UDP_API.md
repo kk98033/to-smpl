@@ -241,6 +241,7 @@ Bridge 會依 `--diagnostic-log-every` 定期在 stdout 輸出單行 `[bridge] d
 | <code>--unity-port</code> | 9095 | SMV2 目的 UDP port |
 | <code>--raw-skeleton-host</code> | Unity host | RSV1 目的 IPv4/hostname |
 | <code>--raw-skeleton-port</code> | 9096 | 設為 0 可停用 RSV1 |
+| <code>--record-unity-packets</code> | disabled | 覆寫 JSONL，錄下實際送往 Unity 的 SMV2／RSV1 datagram 與相對時間 |
 | <code>--smpl-dir</code> | package models | 模型根目錄 |
 | <code>--device</code> | cuda | PyTorch device |
 | <code>--calibration-frames</code> | 30 | fixed-beta 起始校正幀數 |
@@ -253,6 +254,7 @@ Bridge 會依 `--diagnostic-log-every` 定期在 stdout 輸出單行 `[bridge] d
 | <code>--mesh-preview-faces</code> | 2400 | 連續 mesh preview 的三角面上限 |
 | <code>--endpoint-weight</code> | 0.5 | 端點 loss 權重 |
 | <code>--torso-weight</code> | 0.05 | torso normal loss 權重 |
+| <code>--spine-stability-weight</code> | 0.02 | spine1／2／3 rest-rotation regularization |
 | <code>--body-facing-weight</code> | 0.01 | torso 與腳掌水平前向一致性 loss 權重 |
 | <code>--temporal-weight</code> | 0.01 | temporal smoothing 權重 |
 | <code>--max-fit-residual-mm</code> | 100 | MPJPE 超標時保留上一個正常姿勢；0 停用 |
@@ -263,4 +265,4 @@ Bridge 會依 `--diagnostic-log-every` 定期在 stdout 輸出單行 `[bridge] d
 | <code>--robust-huber</code> | off | 啟用 Huber loss |
 | <code>--min-confidence</code> | 0.5 | 目前 fit profile 所選 Body25 點的最低 confidence |
 
-完整 CLI 說明可執行 <code>smpl-0901-bridge --help</code>。模型目錄必須包含 <code>smpl/SMPL_NEUTRAL.pkl</code> 與 <code>J_regressor_body25.npy</code>。<code>smpl-0901-send PATH --destination udp://HOST:9100 --fps 30</code> 可用 JSON/JSONL 做輸入重播測試。
+完整 CLI 說明可執行 <code>smpl-0901-bridge --help</code>；Unity 封包錄製／重播見 <a href="UNITY_FAKE_SENDER.md">Unity Fake Sender</a>。模型目錄必須包含 <code>smpl/SMPL_NEUTRAL.pkl</code> 與 <code>J_regressor_body25.npy</code>。<code>smpl-0901-send PATH --destination udp://HOST:9100 --fps 30</code> 可用 JSON/JSONL 做輸入重播測試。
