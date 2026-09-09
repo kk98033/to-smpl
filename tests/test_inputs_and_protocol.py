@@ -413,6 +413,12 @@ class ProtocolTests(unittest.TestCase):
         panel = (unity_root / "Runtime" / "Smpl0901TrackingPanel.cs").read_text(
             encoding="utf-8"
         )
+        baseline = (
+            unity_root / "Runtime" / "Smpl0901DirectJointBaseline.cs"
+        ).read_text(encoding="utf-8")
+        setup = (unity_root / "Editor" / "Smpl0901PlayerSetup.cs").read_text(
+            encoding="utf-8"
+        )
 
         self.assertIn("RuntimePelvis", player)
         self.assertLess(player.index("ApplyBodyPose(frame.body.pose)"),
@@ -460,6 +466,15 @@ class ProtocolTests(unittest.TestCase):
         self.assertIn("player.SetBoneDebugMode(false)", panel)
         self.assertIn("Show Held Fit", panel)
         self.assertIn("Bind-relative", panel)
+        self.assertIn("ApplyWholeCharacterDisplayRotation", player)
+        self.assertIn("bindRelativeDisplayEuler = new Vector3(0f, 180f, 0f)", player)
+        self.assertIn("rawMatchedDisplayEuler = new Vector3(0f, -90f, 0f)", player)
+        self.assertIn("displayEuler = new Vector3(0f, -90f, 0f)", raw)
+        self.assertIn("matchSmplCharacterScale = true", baseline)
+        self.assertIn("Raw Avatar", panel)
+        self.assertIn("panelExpanded", panel)
+        self.assertIn("Create Demo Room + Camera + Live Player", setup)
+        self.assertIn("SMPL0901_DemoScene", setup)
         self.assertIn("POSE DEBUG", panel)
         self.assertIn("BindingStatus", player)
         self.assertIn("new Vector3(-90f, 0f, 0f)", player)

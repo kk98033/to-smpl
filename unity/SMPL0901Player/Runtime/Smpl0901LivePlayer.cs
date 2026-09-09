@@ -28,6 +28,12 @@ namespace SMPL0901Player.Runtime
         [Tooltip("Apply SMPL axis-angle as a delta from each prefab bone bind rotation. Disable only for legacy SUP rigs authored with identity local rotations.")]
         public bool applyPoseRelativeToBind = true;
 
+        [Header("Display orientation only")]
+        [Tooltip("Additional whole-character rotation used when Bind Relative is enabled. The fitted skeleton follows the same runtime bones.")]
+        public Vector3 bindRelativeDisplayEuler = new Vector3(0f, 180f, 0f);
+        [Tooltip("Whole-character rotation used when Bind Relative is disabled, matching the Raw 59pt display direction.")]
+        public Vector3 rawMatchedDisplayEuler = new Vector3(0f, -90f, 0f);
+
         [Header("SMV2 UDP")]
         public int listenPort = 9095;
         public bool listenOnStart = false;
@@ -162,6 +168,7 @@ namespace SMPL0901Player.Runtime
             rawSkeleton.useSmplCoordinateConversion = true;
             directJointBaseline.player = this;
             directJointBaseline.rawSkeleton = rawSkeleton;
+            directJointBaseline.matchSmplCharacterScale = true;
             if (string.IsNullOrWhiteSpace(rawSkeleton.allowedServerIp))
                 rawSkeleton.allowedServerIp = allowedServerIp;
         }
@@ -358,14 +365,12 @@ namespace SMPL0901Player.Runtime
             BoneDebugMode = enabled;
             if (enabled)
             {
-                if (livePoseRoot != null)
-                    livePoseRoot.localRotation = Quaternion.Euler(livePoseEuler);
+                ApplyWholeCharacterDisplayRotation();
                 ApplyIsolatedBoneDebugPose();
             }
             else if (latestPose != null)
             {
-                if (livePoseRoot != null)
-                    livePoseRoot.localRotation = Quaternion.Euler(livePoseEuler);
+                ApplyWholeCharacterDisplayRotation();
                 ApplyBodyPose(latestPose);
             }
             else
@@ -412,10 +417,8 @@ namespace SMPL0901Player.Runtime
         {
             if (bones == null || bindLocalRotations == null || bindLocalPositions == null)
                 return;
-            // Preview orientation uses only the outer Display Rot. The live
-            // source correction is applied only after a received pose arrives.
-            if (livePoseRoot != null)
-                livePoseRoot.localRotation = Quaternion.identity;
+            // Keep the preview in the same display direction as live playback.
+            ApplyWholeCharacterDisplayRotation();
             for (int index = 0; index < bones.Length; index++)
             {
                 Transform bone = bones[index];
@@ -577,8 +580,7 @@ namespace SMPL0901Player.Runtime
             // This is a whole-pose coordinate correction. Keeping it on the
             // instantiated character root prevents it from contaminating the
             // SMPL pelvis/local skinning rotations.
-            if (livePoseRoot != null)
-                livePoseRoot.localRotation = Quaternion.Euler(livePoseEuler);
+            ApplyWholeCharacterDisplayRotation();
             ApplyBodyPose(frame.body.pose);
             if (rootMotion != null)
                 rootMotion.ApplyFrame(
@@ -630,6 +632,20 @@ namespace SMPL0901Player.Runtime
             }
         }
 
+        /// <summary>
+        /// Applies only a parent/root display correction. It never changes an
+        /// SMPL joint rotation, bind basis, packet value, or retargeting rule.
+        /// </summary>
+        public void ApplyWholeCharacterDisplayRotation()
+        {
+            if (livePoseRoot == null) return;
+            Vector3 displayEuler = applyPoseRelativeToBind
+                ? bindRelativeDisplayEuler
+                : rawMatchedDisplayEuler;
+            livePoseRoot.localRotation =
+                Quaternion.Euler(displayEuler) * Quaternion.Euler(livePoseEuler);
+        }
+
         private Quaternion PoseBaseRotation(int poseIndex, int boneIndex)
         {
             if (applyPoseRelativeToBind && bindLocalRotations != null &&
@@ -657,8 +673,7 @@ namespace SMPL0901Player.Runtime
         private void ApplyIsolatedBoneDebugPose()
         {
             if (!IsRuntimeReady || bodyBoneIndices == null) return;
-            if (livePoseRoot != null)
-                livePoseRoot.localRotation = Quaternion.Euler(livePoseEuler);
+            ApplyWholeCharacterDisplayRotation();
 
             for (int poseIndex = 0; poseIndex < bodyBoneIndices.Length; poseIndex++)
             {

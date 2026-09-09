@@ -22,8 +22,12 @@ namespace SMPL0901Player.Runtime
         public bool renderBaseline = true;
         [Tooltip("Pelvis offset from the SMPL-driven character, in player-local metres.")]
         public Vector3 baselineOffset = new Vector3(2f, 0f, 0f);
+        [Tooltip("Display-only turn shared with the Raw 59pt skeleton.")]
+        public Vector3 displayEuler = new Vector3(0f, -90f, 0f);
+        [Tooltip("Keep the comparison avatar at the same prefab scale as the SMPL avatar.")]
+        public bool matchSmplCharacterScale = true;
         [Tooltip("Uniformly match the direct character's pelvis-to-ankle/neck size to RSV1.")]
-        public bool autoScaleToRaw = true;
+        public bool autoScaleToRaw = false;
         [Range(0.25f, 3f)] public float minimumScale = 0.5f;
         [Range(0.25f, 3f)] public float maximumScale = 1.8f;
 
@@ -109,7 +113,7 @@ namespace SMPL0901Player.Runtime
             if (!IsReady) return;
             ResetRigToBindPose();
             baselineRoot.localPosition = baselineOffset;
-            baselineRoot.localRotation = Quaternion.identity;
+            baselineRoot.localRotation = Quaternion.Euler(displayEuler);
             baselineRoot.localScale = Vector3.one;
         }
 
@@ -235,9 +239,10 @@ namespace SMPL0901Player.Runtime
                 Vector3 targetRight = points[12] - points[11];
                 Vector3 targetUp = targetNeck - targetPelvis;
                 Quaternion targetBasis = BuildBasis(targetRight, targetUp);
-                baselineRoot.localRotation = targetBasis * Quaternion.Inverse(bindBodyBasis);
+                baselineRoot.localRotation = Quaternion.Euler(displayEuler) *
+                    targetBasis * Quaternion.Inverse(bindBodyBasis);
 
-                if (autoScaleToRaw &&
+                if (!matchSmplCharacterScale && autoScaleToRaw &&
                     TryGetPoint(points, valid, VirtualAnkleMid, out Vector3 targetAnkle))
                 {
                     float targetSpan = Vector3.Distance(targetNeck, targetAnkle);
@@ -254,7 +259,10 @@ namespace SMPL0901Player.Runtime
                 Vector3 targetLocalDirection = target - source;
                 if (targetLocalDirection.sqrMagnitude < 1e-8f) continue;
 
-                Vector3 targetWorldDirection = transform.TransformDirection(targetLocalDirection.normalized);
+                Vector3 displayedTargetDirection =
+                    Quaternion.Euler(displayEuler) * targetLocalDirection.normalized;
+                Vector3 targetWorldDirection =
+                    transform.TransformDirection(displayedTargetDirection);
                 Vector3 bindWorldDirection = baselineRoot.TransformDirection(driver.bindDirectionInRoot);
                 Quaternion delta = Quaternion.FromToRotation(bindWorldDirection, targetWorldDirection);
                 Quaternion bindWorldRotation = baselineRoot.rotation * driver.bindRotationInRoot;

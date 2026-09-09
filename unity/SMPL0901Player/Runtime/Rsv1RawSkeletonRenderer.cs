@@ -19,6 +19,8 @@ namespace SMPL0901Player.Runtime
         public bool followSmplPelvis = true;
         [Tooltip("Fine alignment offset in the live-player coordinate frame.")]
         public Vector3 alignmentOffset = Vector3.zero;
+        [Tooltip("Display-only turn applied to the complete Raw 59pt skeleton after coordinate conversion.")]
+        public Vector3 displayEuler = new Vector3(0f, -90f, 0f);
 
         [Header("RSV1 UDP")]
         public int listenPort = 9096;
@@ -342,12 +344,13 @@ namespace SMPL0901Player.Runtime
 
         private void LateUpdate()
         {
-            if (!followSmplPelvis || skeletonRoot == null) return;
+            if (skeletonRoot == null) return;
+            skeletonRoot.rotation = transform.rotation * Quaternion.Euler(displayEuler);
+            if (!followSmplPelvis) return;
             if (player == null) player = GetComponent<Smpl0901LivePlayer>();
             if (player == null || player.RuntimePelvis == null) return;
             skeletonRoot.position = player.RuntimePelvis.position +
                 transform.TransformVector(alignmentOffset);
-            skeletonRoot.rotation = transform.rotation;
         }
 
         private void BuildVisuals()

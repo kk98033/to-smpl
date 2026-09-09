@@ -13,8 +13,10 @@ namespace SMPL0901Player.Runtime
         public Smpl0901DirectJointBaseline directJointBaseline;
         public bool visible = true;
         public bool showDebugDetails = false;
+        public bool panelExpanded = true;
+        [Range(2f, 12f)] public float panelAnimationSpeed = 7f;
         public Vector2 screenPosition = new Vector2(15f, 15f);
-        public Vector2 panelSize = new Vector2(690f, 580f);
+        public Vector2 panelSize = new Vector2(840f, 650f);
 
         private ProtocolV2Frame latest;
         private GUIStyle labelStyle;
@@ -22,6 +24,15 @@ namespace SMPL0901Player.Runtime
         private string smv2PortText;
         private string rsv1PortText;
         private string localIpv4Text;
+        private float panelOpenAmount = 1f;
+
+        private void Update()
+        {
+            float target = panelExpanded ? 1f : 0f;
+            panelOpenAmount = Mathf.MoveTowards(
+                panelOpenAmount, target,
+                Mathf.Max(2f, panelAnimationSpeed) * Time.unscaledDeltaTime);
+        }
 
         public void SetFrame(ProtocolV2Frame frame)
         {
@@ -31,6 +42,14 @@ namespace SMPL0901Player.Runtime
         void OnGUI()
         {
             if (!visible) return;
+            if (!panelExpanded && panelOpenAmount <= 0.001f)
+            {
+                if (GUI.Button(
+                        new Rect(screenPosition.x, screenPosition.y, 132f, 36f),
+                        "SMPL Player  >"))
+                    panelExpanded = true;
+                return;
+            }
             if (labelStyle == null)
             {
                 labelStyle = new GUIStyle(GUI.skin.label) { fontSize = 15, richText = true };
@@ -50,9 +69,20 @@ namespace SMPL0901Player.Runtime
             if (localIpv4Text == null) localIpv4Text = FindLocalIpv4Addresses();
 
             float width = Mathf.Max(840f, panelSize.x);
-            float height = showDebugDetails ? Mathf.Max(614f, panelSize.y) : 304f;
-            Rect panel = new Rect(screenPosition.x, screenPosition.y, width, height);
+            float height = showDebugDetails ? Mathf.Max(680f, panelSize.y) : 348f;
+            float animatedX = screenPosition.x - (1f - panelOpenAmount) * (width + 24f);
+            Rect panel = new Rect(animatedX, screenPosition.y, width, height);
             GUI.Box(panel, "SMPL 0901 Live Player");
+            Color previousColor = GUI.color;
+            GUI.color = new Color(0.20f, 0.82f, 1f, 0.9f);
+            GUI.DrawTexture(
+                new Rect(panel.x + 1f, panel.y + 2f, 5f, panel.height - 4f),
+                Texture2D.whiteTexture);
+            GUI.color = previousColor;
+            if (GUI.Button(
+                    new Rect(panel.x + panel.width - 94f, panel.y + 3f, 84f, 21f),
+                    "Hide UI  <"))
+                panelExpanded = false;
 
             // Keep the three requested rendering choices at the very top so
             // an older serialized panel size cannot hide them.
@@ -84,9 +114,14 @@ namespace SMPL0901Player.Runtime
                 showDebugDetails, "Show Debug");
             if (player != null)
             {
-                player.applyPoseRelativeToBind = GUI.Toggle(
+                bool bindRelative = GUI.Toggle(
                     new Rect(panel.x + 690, toggleY, 140, 24),
                     player.applyPoseRelativeToBind, "Bind-relative");
+                if (bindRelative != player.applyPoseRelativeToBind)
+                {
+                    player.applyPoseRelativeToBind = bindRelative;
+                    player.ApplyWholeCharacterDisplayRotation();
+                }
             }
 
             float configY = panel.y + 58f;
@@ -144,8 +179,8 @@ namespace SMPL0901Player.Runtime
             if (directJointBaseline != null)
             {
                 bool showBaseline = GUI.Toggle(
-                    new Rect(panel.x + 568, buttonY, 112, 26),
-                    directJointBaseline.renderBaseline, "XYZ Baseline");
+                    new Rect(panel.x + 568, buttonY, 125, 26),
+                    directJointBaseline.renderBaseline, "Raw Avatar");
                 if (showBaseline != directJointBaseline.renderBaseline)
                     directJointBaseline.SetVisible(showBaseline);
             }
@@ -232,6 +267,42 @@ namespace SMPL0901Player.Runtime
                     player.rootMotion.ResetDisplayEuler();
             }
 
+            float facingY = displayRotationY + 34f;
+            GUI.Label(new Rect(panel.x + 14, facingY, 72, 24), "Facing Y");
+            if (player != null && rawSkeleton != null)
+            {
+                float smplYaw = player.bindRelativeDisplayEuler.y;
+                float adjustedSmplYaw = DrawAngleSlider(
+                    new Rect(panel.x + 84, facingY, 205, 24), "S", smplYaw);
+                float rawYaw = rawSkeleton.displayEuler.y;
+                float adjustedRawYaw = DrawAngleSlider(
+                    new Rect(panel.x + 306, facingY, 205, 24), "R", rawYaw);
+                if (!Mathf.Approximately(adjustedSmplYaw, smplYaw))
+                {
+                    player.bindRelativeDisplayEuler.y = adjustedSmplYaw;
+                    player.ApplyWholeCharacterDisplayRotation();
+                }
+                if (!Mathf.Approximately(adjustedRawYaw, rawYaw))
+                {
+                    rawSkeleton.displayEuler.y = adjustedRawYaw;
+                    player.rawMatchedDisplayEuler.y = adjustedRawYaw;
+                    if (directJointBaseline != null)
+                        directJointBaseline.displayEuler.y = adjustedRawYaw;
+                    player.ApplyWholeCharacterDisplayRotation();
+                }
+                if (GUI.Button(
+                        new Rect(panel.x + 548, facingY - 1f, 145, 25f),
+                        "Reset Facing"))
+                {
+                    player.bindRelativeDisplayEuler = new Vector3(0f, 180f, 0f);
+                    player.rawMatchedDisplayEuler = new Vector3(0f, -90f, 0f);
+                    rawSkeleton.displayEuler = new Vector3(0f, -90f, 0f);
+                    if (directJointBaseline != null)
+                        directJointBaseline.displayEuler = rawSkeleton.displayEuler;
+                    player.ApplyWholeCharacterDisplayRotation();
+                }
+            }
+
             if (!showDebugDetails)
             {
                 GUI.Label(
@@ -275,7 +346,7 @@ namespace SMPL0901Player.Runtime
                 $"ignored={rawSkeleton.IgnoredPackets}, " +
                 $"decodeErrors={rawSkeleton.DecodeErrors}";
 
-            float statusY = displayRotationY + 34f;
+            float statusY = facingY + 34f;
             GUI.Label(
                 new Rect(panel.x + 14, statusY, panel.width - 28, 220f),
                 $"Unity local IPv4: {localIpv4Text}\n" +
