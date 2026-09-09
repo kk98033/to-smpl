@@ -475,6 +475,7 @@ class ProtocolTests(unittest.TestCase):
         self.assertIn("displayEuler = new Vector3(0f, -90f, 0f)", raw)
         self.assertIn("matchSmplCharacterScale = true", baseline)
         self.assertIn("baselineOffset = new Vector3(-2f, 0f, 0f)", baseline)
+        self.assertIn("baselineOffset.x - 2f", baseline)
         self.assertIn("SMPL FITTED AVATAR", labels)
         self.assertIn("RAW 59PT AVATAR", labels)
         self.assertIn("Camera.main", labels)

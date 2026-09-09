@@ -76,6 +76,14 @@ namespace SMPL0901Player.Runtime
 
         private void Start()
         {
+            // Existing scenes serialized the old +2 X default. Because the
+            // shared player root faces Y=180, that value appears on the
+            // camera-left underneath the UI. Migrate only that exact legacy
+            // default; preserve every user-adjusted placement.
+            if (Mathf.Abs(baselineOffset.x - 2f) < 0.001f &&
+                Mathf.Abs(baselineOffset.y) < 0.001f &&
+                Mathf.Abs(baselineOffset.z) < 0.001f)
+                baselineOffset = new Vector3(-2f, 0f, 0f);
             ResolveSources();
             TryBuild();
         }
