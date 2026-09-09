@@ -21,7 +21,7 @@ namespace SMPL0901Player.Runtime
         [Header("Display")]
         public bool renderBaseline = true;
         [Tooltip("Pelvis offset from the SMPL-driven character, in player-local metres.")]
-        public Vector3 baselineOffset = new Vector3(2f, 0f, 0f);
+        public Vector3 baselineOffset = new Vector3(-2f, 0f, 0f);
         [Tooltip("Display-only turn shared with the Raw 59pt skeleton.")]
         public Vector3 displayEuler = new Vector3(0f, -90f, 0f);
         [Tooltip("Keep the comparison avatar at the same prefab scale as the SMPL avatar.")]
@@ -32,6 +32,7 @@ namespace SMPL0901Player.Runtime
         [Range(0.25f, 3f)] public float maximumScale = 1.8f;
 
         public bool IsReady => runtimeCharacter != null && pelvis != null;
+        public Transform RuntimePelvis => pelvis;
         public string Status { get; private set; } = "not built";
 
         private const int VirtualPelvis = 59;
@@ -105,7 +106,7 @@ namespace SMPL0901Player.Runtime
 
         public void ResetBaselineOffset()
         {
-            SetBaselineOffset(new Vector3(2f, 0f, 0f));
+            SetBaselineOffset(new Vector3(-2f, 0f, 0f));
         }
 
         public void ShowBindPose()
@@ -113,7 +114,7 @@ namespace SMPL0901Player.Runtime
             if (!IsReady) return;
             ResetRigToBindPose();
             baselineRoot.localPosition = baselineOffset;
-            baselineRoot.localRotation = Quaternion.Euler(displayEuler);
+            baselineRoot.localRotation = Quaternion.identity;
             baselineRoot.localScale = Vector3.one;
         }
 

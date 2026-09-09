@@ -152,6 +152,7 @@ namespace SMPL0901Player.Runtime
             if (rawSkeleton == null) rawSkeleton = GetOrAdd<Rsv1RawSkeletonRenderer>();
             if (directJointBaseline == null)
                 directJointBaseline = GetOrAdd<Smpl0901DirectJointBaseline>();
+            Smpl0901WorldLabels labels = GetOrAdd<Smpl0901WorldLabels>();
 
             rootMotion.runtimeRoot = transform;
             rootMotion.SetDisplayEuler(rootMotion.displayEuler);
@@ -169,6 +170,8 @@ namespace SMPL0901Player.Runtime
             directJointBaseline.player = this;
             directJointBaseline.rawSkeleton = rawSkeleton;
             directJointBaseline.matchSmplCharacterScale = true;
+            labels.player = this;
+            labels.rawAvatar = directJointBaseline;
             if (string.IsNullOrWhiteSpace(rawSkeleton.allowedServerIp))
                 rawSkeleton.allowedServerIp = allowedServerIp;
         }
@@ -417,8 +420,11 @@ namespace SMPL0901Player.Runtime
         {
             if (bones == null || bindLocalRotations == null || bindLocalPositions == null)
                 return;
-            // Keep the preview in the same display direction as live playback.
-            ApplyWholeCharacterDisplayRotation();
+            // Preview is authored upright and must face the camera before any
+            // source frame arrives. Live source/display corrections begin on
+            // the first received frame only.
+            if (livePoseRoot != null)
+                livePoseRoot.localRotation = Quaternion.identity;
             for (int index = 0; index < bones.Length; index++)
             {
                 Transform bone = bones[index];

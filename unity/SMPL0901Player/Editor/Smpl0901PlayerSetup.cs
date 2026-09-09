@@ -53,6 +53,7 @@ namespace SMPL0901Player.Editor
             Rsv1RawSkeletonRenderer raw = GetOrAdd<Rsv1RawSkeletonRenderer>(target);
             Smpl0901DirectJointBaseline baseline =
                 GetOrAdd<Smpl0901DirectJointBaseline>(target);
+            Smpl0901WorldLabels labels = GetOrAdd<Smpl0901WorldLabels>(target);
 
             player.listenPort = 9095;
             player.listenOnStart = false;
@@ -106,10 +107,12 @@ namespace SMPL0901Player.Editor
             baseline.player = player;
             baseline.rawSkeleton = raw;
             baseline.renderBaseline = true;
-            baseline.baselineOffset = new Vector3(2f, 0f, 0f);
+            baseline.baselineOffset = new Vector3(-2f, 0f, 0f);
             baseline.displayEuler = raw.displayEuler;
             baseline.matchSmplCharacterScale = true;
             baseline.autoScaleToRaw = false;
+            labels.player = player;
+            labels.rawAvatar = baseline;
             panel.visible = true;
             panel.showDebugDetails = false;
             panel.panelExpanded = true;
@@ -129,6 +132,7 @@ namespace SMPL0901Player.Editor
             EditorUtility.SetDirty(fitted);
             EditorUtility.SetDirty(raw);
             EditorUtility.SetDirty(baseline);
+            EditorUtility.SetDirty(labels);
             EditorSceneManager.MarkSceneDirty(
                 UnityEngine.SceneManagement.SceneManager.GetActiveScene());
             Selection.activeGameObject = target;

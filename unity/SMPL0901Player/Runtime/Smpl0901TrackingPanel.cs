@@ -69,7 +69,7 @@ namespace SMPL0901Player.Runtime
             if (localIpv4Text == null) localIpv4Text = FindLocalIpv4Addresses();
 
             float width = Mathf.Max(840f, panelSize.x);
-            float height = showDebugDetails ? Mathf.Max(680f, panelSize.y) : 348f;
+            float height = Mathf.Max(680f, Screen.height - screenPosition.y * 2f);
             float animatedX = screenPosition.x - (1f - panelOpenAmount) * (width + 24f);
             Rect panel = new Rect(animatedX, screenPosition.y, width, height);
             GUI.Box(panel, "SMPL 0901 Live Player");
@@ -303,13 +303,19 @@ namespace SMPL0901Player.Runtime
                 }
             }
 
-            if (!showDebugDetails)
-            {
-                GUI.Label(
-                    new Rect(panel.x + 14, panel.y + panel.height - 30f, panel.width - 28, 24f),
-                    BuildPoseStatusMessage(), labelStyle);
-                return;
-            }
+            GUI.Label(
+                new Rect(panel.x + 14, panel.y + panel.height - 34f, panel.width - 28, 26f),
+                BuildPoseStatusMessage(), labelStyle);
+            if (!showDebugDetails) return;
+
+            float debugWidth = Mathf.Min(720f, Screen.width - 30f);
+            float debugHeight = Mathf.Min(650f, Screen.height - 30f);
+            Rect debugPanel = new Rect(
+                Screen.width - debugWidth - 15f,
+                Screen.height - debugHeight - 15f,
+                debugWidth,
+                debugHeight);
+            GUI.Box(debugPanel, "SMPL 0901 Debug");
 
             string smv2Connection = player != null && player.IsListening ? "LISTENING" : "STOPPED";
             string smv2Age = player == null || float.IsPositiveInfinity(player.SecondsSinceLastPacket)
@@ -346,9 +352,9 @@ namespace SMPL0901Player.Runtime
                 $"ignored={rawSkeleton.IgnoredPackets}, " +
                 $"decodeErrors={rawSkeleton.DecodeErrors}";
 
-            float statusY = facingY + 34f;
+            float statusY = debugPanel.y + 28f;
             GUI.Label(
-                new Rect(panel.x + 14, statusY, panel.width - 28, 220f),
+                new Rect(debugPanel.x + 14, statusY, debugPanel.width - 28, 330f),
                 $"Unity local IPv4: {localIpv4Text}\n" +
                 $"Filter: {(string.IsNullOrWhiteSpace(serverIpText) ? "ANY" : serverIpText)}\n" +
                 smv2Transport + "\n" + rawTransport + "\n" + qualityText + "\n" +
@@ -364,17 +370,18 @@ namespace SMPL0901Player.Runtime
 
             string debug = BuildDebugMessage();
             GUI.Label(
-                new Rect(panel.x + 14, panel.y + panel.height - 62f, panel.width - 28, 52f),
+                new Rect(debugPanel.x + 14, debugPanel.y + 350f,
+                    debugPanel.width - 28, 58f),
                 debug, labelStyle);
-            DrawBoneDebugPanel(panel);
+            DrawBoneDebugPanel(debugPanel);
         }
 
         private void DrawBoneDebugPanel(Rect parentPanel)
         {
             if (player == null) return;
             Rect panel = new Rect(
-                parentPanel.x, parentPanel.y + parentPanel.height + 8f,
-                parentPanel.width, 218f);
+                parentPanel.x + 8f, parentPanel.y + parentPanel.height - 230f,
+                parentPanel.width - 16f, 218f);
             GUI.Box(panel, "SMPL Bone Isolation Debug");
 
             bool enabled = GUI.Toggle(

@@ -345,7 +345,10 @@ namespace SMPL0901Player.Runtime
         private void LateUpdate()
         {
             if (skeletonRoot == null) return;
-            skeletonRoot.rotation = transform.rotation * Quaternion.Euler(displayEuler);
+            Quaternion displayRotation = LatestFrameId < 0
+                ? Quaternion.identity
+                : Quaternion.Euler(displayEuler);
+            skeletonRoot.rotation = transform.rotation * displayRotation;
             if (!followSmplPelvis) return;
             if (player == null) player = GetComponent<Smpl0901LivePlayer>();
             if (player == null || player.RuntimePelvis == null) return;

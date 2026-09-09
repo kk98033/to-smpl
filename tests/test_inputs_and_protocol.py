@@ -419,6 +419,9 @@ class ProtocolTests(unittest.TestCase):
         setup = (unity_root / "Editor" / "Smpl0901PlayerSetup.cs").read_text(
             encoding="utf-8"
         )
+        labels = (unity_root / "Runtime" / "Smpl0901WorldLabels.cs").read_text(
+            encoding="utf-8"
+        )
 
         self.assertIn("RuntimePelvis", player)
         self.assertLess(player.index("ApplyBodyPose(frame.body.pose)"),
@@ -471,8 +474,14 @@ class ProtocolTests(unittest.TestCase):
         self.assertIn("rawMatchedDisplayEuler = new Vector3(0f, -90f, 0f)", player)
         self.assertIn("displayEuler = new Vector3(0f, -90f, 0f)", raw)
         self.assertIn("matchSmplCharacterScale = true", baseline)
+        self.assertIn("baselineOffset = new Vector3(-2f, 0f, 0f)", baseline)
+        self.assertIn("SMPL FITTED AVATAR", labels)
+        self.assertIn("RAW 59PT AVATAR", labels)
+        self.assertIn("Camera.main", labels)
         self.assertIn("Raw Avatar", panel)
         self.assertIn("panelExpanded", panel)
+        self.assertIn("Screen.height - screenPosition.y * 2f", panel)
+        self.assertIn('GUI.Box(debugPanel, "SMPL 0901 Debug")', panel)
         self.assertIn("Create Demo Room + Camera + Live Player", setup)
         self.assertIn("SMPL0901_DemoScene", setup)
         self.assertIn("POSE DEBUG", panel)

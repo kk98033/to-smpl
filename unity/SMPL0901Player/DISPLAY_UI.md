@@ -14,12 +14,18 @@ or Hand21 retargeting.
 The runtime UI exposes the two facing yaw values and a `Reset Facing` button.
 `Display Rot` remains a common parent/world placement rotation.
 
+Before the first packet, both avatars and the Raw skeleton use their authored
+upright preview facing without the live source correction. The configured live
+display turns begin only when the first corresponding pose is applied.
+
 ## Raw avatar scale and visibility
 
 `Raw Avatar` toggles the comparison character driven directly from RSV1 joint
 directions. `matchSmplCharacterScale` is enabled by default, so it uses the
 same prefab scale as the SMPL character. The older raw-span auto-scaling path
 remains available in the Inspector but is disabled by default.
+Its default local X offset is `-2`, which places it on the camera-right side
+after the common player display rotation.
 
 ## Hybrid fingers
 
@@ -31,6 +37,11 @@ derived from factory-59. SMPL does not drive the finger slots.
 
 Press `Hide UI <` to slide the panel off screen. The remaining `SMPL Player >`
 button slides it back in. This does not stop either UDP receiver.
+The main control panel fills the Game view height. `Show Debug` opens a separate
+window anchored at the lower-right instead of extending the main panel.
+
+World-space labels above the two characters identify `SMPL FITTED AVATAR` and
+`RAW 59PT AVATAR`; they follow the pelvis and face the active Main Camera.
 
 ## One-click room
 
