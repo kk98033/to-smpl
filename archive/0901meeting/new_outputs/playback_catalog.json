@@ -1,0 +1,160 @@
+{
+  "version": 1,
+  "defaultIndex": 0,
+  "animations": [
+    {
+      "id": "h3wb_300",
+      "displayName": "H3WB 300 — GT / hands / root",
+      "path": "d:\\School\\Projects\\main\\0901meeting\\new_outputs\\h3wb_300\\h3wb_300.json",
+      "fps": 15.0,
+      "rootEuler": [
+        90.0,
+        0.0,
+        0.0
+      ],
+      "gtAvailable": true,
+      "hasHands": true,
+      "useSmplHandPose": false,
+      "frames": 300,
+      "validLeftHandFrames": 300,
+      "validRightHandFrames": 300,
+      "rootRangeM": [
+        0.2986883223056793,
+        0.0,
+        0.04696962982416153
+      ]
+    },
+    {
+      "id": "h36m_300",
+      "displayName": "H3.6M 300 — GT body / root",
+      "path": "d:\\School\\Projects\\main\\0901meeting\\new_outputs\\h36m_300\\h36m_300.json",
+      "fps": 15.0,
+      "rootEuler": [
+        90.0,
+        0.0,
+        0.0
+      ],
+      "gtAvailable": true,
+      "hasHands": false,
+      "useSmplHandPose": false,
+      "frames": 300,
+      "validLeftHandFrames": 0,
+      "validRightHandFrames": 0,
+      "rootRangeM": [
+        0.1457890272140503,
+        0.0,
+        0.03435741737484932
+      ]
+    },
+    {
+      "id": "amass_punching",
+      "displayName": "AMASS Punching — GT / hands / root",
+      "path": "d:\\School\\Projects\\main\\0901meeting\\new_outputs\\amass_punching\\amass_punching.json",
+      "fps": 15.0,
+      "rootEuler": [
+        -90.0,
+        0.0,
+        0.0
+      ],
+      "gtAvailable": true,
+      "hasHands": true,
+      "useSmplHandPose": false,
+      "frames": 234,
+      "validLeftHandFrames": 234,
+      "validRightHandFrames": 234,
+      "rootRangeM": [
+        0.06084803491830826,
+        0.0,
+        0.029992833733558655
+      ]
+    },
+    {
+      "id": "amass_sample_300",
+      "displayName": "AMASS Sample 300 — GT / hands / root",
+      "path": "d:\\School\\Projects\\main\\0901meeting\\new_outputs\\amass_sample_300\\amass_sample_300.json",
+      "fps": 15.0,
+      "rootEuler": [
+        -90.0,
+        0.0,
+        0.0
+      ],
+      "gtAvailable": true,
+      "hasHands": true,
+      "useSmplHandPose": false,
+      "frames": 300,
+      "validLeftHandFrames": 300,
+      "validRightHandFrames": 300,
+      "rootRangeM": [
+        0.0,
+        0.0,
+        0.0
+      ]
+    },
+    {
+      "id": "amass_hand_motion_300",
+      "displayName": "AMASS Hand Motion 300 — SMPL finger rotations",
+      "path": "F:\\School\\Projects\\main\\0804meeting\\unity_playback\\amass_hand_motion_300.json",
+      "fps": 15.0,
+      "rootEuler": [
+        -90.0,
+        0.0,
+        0.0
+      ],
+      "gtAvailable": true,
+      "hasHands": true,
+      "useSmplHandPose": true,
+      "frames": 300,
+      "validLeftHandFrames": 300,
+      "validRightHandFrames": 300,
+      "rootRangeM": [
+        0.0,
+        0.0,
+        0.0
+      ]
+    },
+    {
+      "id": "teammate_2cam_300",
+      "displayName": "Teammate 2-camera — no GT",
+      "path": "F:\\School\\Projects\\main\\0804meeting\\unity_playback\\teammate_2cam_300.json",
+      "fps": 15.0,
+      "rootEuler": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "gtAvailable": false,
+      "hasHands": true,
+      "useSmplHandPose": false,
+      "frames": 300,
+      "validLeftHandFrames": 13,
+      "validRightHandFrames": 5,
+      "rootRangeM": [
+        0.06910738348960876,
+        0.0,
+        0.14830759167671204
+      ]
+    },
+    {
+      "id": "teammate_4view_300",
+      "displayName": "Teammate 4-view — no GT",
+      "path": "F:\\School\\Projects\\main\\0804meeting\\unity_playback\\teammate_4view_300.json",
+      "fps": 15.0,
+      "rootEuler": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "gtAvailable": false,
+      "hasHands": true,
+      "useSmplHandPose": false,
+      "frames": 300,
+      "validLeftHandFrames": 300,
+      "validRightHandFrames": 300,
+      "rootRangeM": [
+        0.40124931931495667,
+        0.0,
+        0.12947168946266174
+      ]
+    }
+  ]
+}

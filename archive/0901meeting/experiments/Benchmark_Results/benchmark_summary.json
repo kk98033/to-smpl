@@ -1,0 +1,29 @@
+{
+  "Baseline KAMA-100 (Zero Betas)": {
+    "mpjpe_mean": 15.352587699890137,
+    "mpjpe_median": 15.090957641601562,
+    "endpoint_mean": 9.72997760772705,
+    "torso_deg_mean": 4.299470161433098,
+    "fit_pass_rate": 93.33333333333333,
+    "ms_per_sample": 62.77144666528329,
+    "fps": 15.930810155329194
+  },
+  "Baseline KAMA-100 + Adaptive +100": {
+    "mpjpe_mean": 8.182441711425781,
+    "mpjpe_median": 8.131013870239258,
+    "endpoint_mean": 4.992414474487305,
+    "torso_deg_mean": 1.091636224802505,
+    "fit_pass_rate": 100.0,
+    "ms_per_sample": 56.91316666586014,
+    "fps": 17.570626598077855
+  },
+  "Fixed Betas + Soft Target (Best Method)": {
+    "mpjpe_mean": 38.031272888183594,
+    "mpjpe_median": 38.844818115234375,
+    "endpoint_mean": 9.436795234680176,
+    "torso_deg_mean": 3.366956648548856,
+    "fit_pass_rate": 83.33333333333334,
+    "ms_per_sample": 31.941959999191265,
+    "fps": 31.30678267787321
+  }
+}
