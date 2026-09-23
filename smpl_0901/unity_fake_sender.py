@@ -7,6 +7,7 @@ import base64
 import json
 import socket
 import struct
+import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -16,6 +17,7 @@ from .raw_skeleton_udp import PACKET_SIZE as RSV1_PACKET_SIZE
 
 
 SCHEMA = "smpl-0901.unity-packet-record/v1"
+CONTROL_SCHEMA = "dt-pose.dashboard-recording-control/v1"
 PACKET_SIZES = {"SMV2": SMV2_PACKET_SIZE, "RSV1": RSV1_PACKET_SIZE}
 FRAME_ID_OFFSETS = {"SMV2": 4, "RSV1": 8}
 
@@ -59,6 +61,67 @@ class UnityPacketRecorder:
 
     def close(self) -> None:
         self._stream.close()
+
+
+class ControlledUnityPacketRecorder:
+    """Switch exact packet recording from a dashboard-owned control file."""
+
+    def __init__(self, control_path: str | Path) -> None:
+        self.control_path = Path(control_path)
+        self.root = self.control_path.parent
+        self._lock = threading.Lock()
+        self._recorder: UnityPacketRecorder | None = None
+        self._session_id: str | None = None
+        self._control_mtime_ns = -1
+        self.packet_count = 0
+
+    @staticmethod
+    def _safe_session_id(value: object) -> str:
+        session_id = str(value or "")
+        allowed = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_"
+        if not session_id or any(char not in allowed for char in session_id):
+            raise ValueError("recording session_id contains unsupported characters")
+        return session_id
+
+    def _refresh(self) -> None:
+        try:
+            stat = self.control_path.stat()
+        except FileNotFoundError:
+            return
+        if stat.st_mtime_ns == self._control_mtime_ns:
+            return
+        self._control_mtime_ns = stat.st_mtime_ns
+        control = json.loads(self.control_path.read_text(encoding="utf-8"))
+        if control.get("schema") != CONTROL_SCHEMA:
+            raise ValueError("unsupported dashboard recording control schema")
+        requested = (
+            self._safe_session_id(control.get("session_id"))
+            if control.get("recording") else None
+        )
+        if requested == self._session_id:
+            return
+        if self._recorder is not None:
+            self._recorder.close()
+        self._recorder = None
+        self._session_id = requested
+        self.packet_count = 0
+        if requested is not None:
+            self._recorder = UnityPacketRecorder(
+                self.root / requested / "unity_packets.jsonl"
+            )
+
+    def record(self, protocol: str, packet: bytes) -> None:
+        with self._lock:
+            self._refresh()
+            if self._recorder is not None:
+                self._recorder.record(protocol, packet)
+                self.packet_count += 1
+
+    def close(self) -> None:
+        with self._lock:
+            if self._recorder is not None:
+                self._recorder.close()
+                self._recorder = None
 
 
 def load_recording(path: str | Path) -> list[RecordedPacket]:

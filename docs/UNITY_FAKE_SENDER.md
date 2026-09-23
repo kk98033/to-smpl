@@ -151,3 +151,8 @@ sudo docker compose logs -f --tail=100 bridge
 
 `--force-recreate` 沒帶 `SMPL_OUTPUT_DIR` 時會回到本 repo 的
 `artifacts/live/`；Bridge 仍會運作，但另一個目錄上的 Dashboard 只會看到舊幀。
+
+
+## Dashboard 動態錄製相容性
+
+Bridge 的 `--dashboard-recording-control PATH` 會依 Dashboard 控制檔動態開關錄製，不需重啟 Bridge。輸出仍為本文件定義的 `smpl-0901.unity-packet-record/v1`，因此可直接使用 `smpl-0901-unity-fake` 重播。Compose 已設定控制檔為 `/output/dashboard_recordings/control.json`；獨立的 `to-smpl` 與 `digital-twin-pose` 必須掛載同一個主機輸出目錄。

@@ -7,6 +7,8 @@ from unittest import mock
 from smpl_0901.protocol_v2_udp import PACKET_SIZE as SMV2_PACKET_SIZE
 from smpl_0901.raw_skeleton_udp import PACKET_SIZE as RSV1_PACKET_SIZE
 from smpl_0901.unity_fake_sender import (
+    CONTROL_SCHEMA,
+    ControlledUnityPacketRecorder,
     RecordedPacket,
     UnityPacketRecorder,
     load_recording,
@@ -50,6 +52,40 @@ class UnityFakeSenderTests(unittest.TestCase):
             self.assertEqual([event.protocol for event in events], ["RSV1", "SMV2"])
             self.assertEqual(events[0].packet, packet("RSV1", 7))
             self.assertEqual(events[1].packet, packet("SMV2", 7))
+
+    def test_dashboard_control_starts_and_stops_exact_packet_recording(self):
+        import json
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            control = root / "control.json"
+            recorder = ControlledUnityPacketRecorder(control)
+            control.write_text(json.dumps({
+                "schema": CONTROL_SCHEMA, "recording": True, "session_id": "demo_01"
+            }))
+            recorder.record("RSV1", packet("RSV1", 21))
+            recorder.record("SMV2", packet("SMV2", 21))
+            control.write_text(json.dumps({
+                "schema": CONTROL_SCHEMA, "recording": False, "session_id": "demo_01"
+            }))
+            recorder.record("SMV2", packet("SMV2", 22))
+            recorder.close()
+
+            events = load_recording(root / "demo_01" / "unity_packets.jsonl")
+            self.assertEqual([event.protocol for event in events], ["RSV1", "SMV2"])
+            self.assertEqual([packet_frame_id(event) for event in events], [21, 21])
+
+    def test_dashboard_control_rejects_unsafe_session_id(self):
+        import json
+
+        with tempfile.TemporaryDirectory() as directory:
+            control = Path(directory) / "control.json"
+            control.write_text(json.dumps({
+                "schema": CONTROL_SCHEMA, "recording": True, "session_id": "../escape"
+            }))
+            recorder = ControlledUnityPacketRecorder(control)
+            with self.assertRaisesRegex(ValueError, "unsupported characters"):
+                recorder.record("SMV2", packet("SMV2", 1))
 
     def test_replay_routes_protocols_and_advances_ids_when_looping(self):
         events = [

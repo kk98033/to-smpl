@@ -671,6 +671,11 @@ class Smpl0901Bridge:
         if args.record_unity_packets is not None:
             from .unity_fake_sender import UnityPacketRecorder
             self.packet_recorder = UnityPacketRecorder(args.record_unity_packets)
+        elif args.dashboard_recording_control is not None:
+            from .unity_fake_sender import ControlledUnityPacketRecorder
+            self.packet_recorder = ControlledUnityPacketRecorder(
+                args.dashboard_recording_control
+            )
         self.raw_destination = (
             args.raw_skeleton_host or args.unity_host, args.raw_skeleton_port
         ) if args.raw_skeleton_port else None
@@ -1118,6 +1123,10 @@ def parse_args() -> argparse.Namespace:
         "--record-unity-packets", type=Path,
         help="overwrite a JSONL capture with exact outgoing SMV2/RSV1 datagrams",
     )
+    parser.add_argument(
+        "--dashboard-recording-control", type=Path,
+        help="control JSON used by Dashboard to start/stop exact Unity packet recording",
+    )
     parser.add_argument("--smpl-dir", type=Path, default=default_smpl_dir())
     parser.add_argument("--device", default="cuda")
     parser.add_argument("--calibration-frames", type=int, default=30)
@@ -1263,6 +1272,8 @@ def main() -> int:
     )
     if args.record_unity_packets is not None:
         print(f"[bridge] Unity packet recording={args.record_unity_packets}")
+    if args.dashboard_recording_control is not None:
+        print(f"[bridge] Dashboard recording control={args.dashboard_recording_control}")
     bridge = Smpl0901Bridge(args)
     fit_stream = None
     if args.fit_jsonl is not None:

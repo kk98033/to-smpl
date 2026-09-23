@@ -55,6 +55,7 @@ services:
           --max-delta-deg "${SMPL_MAX_DELTA_DEG:-90}" \
           --max-facing-mismatch-deg "${SMPL_MAX_FACING_MISMATCH_DEG:-90}" \
           --fit-jsonl /output/smpl_fit.jsonl \
+          --dashboard-recording-control /output/dashboard_recordings/control.json \
           --mesh-preview-json /output/smpl_mesh.json \
           --mesh-preview-faces "${SMPL_MESH_PREVIEW_FACES:-2400}" \
           --smplx-preview-json /output/smplx_mesh.json \
