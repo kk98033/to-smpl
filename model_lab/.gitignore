@@ -1,0 +1,27 @@
+# Generated benchmark outputs and local datasets
+comparisons/runs/
+benchmark/results/
+data/
+datasets/
+outputs/
+artifacts/
+
+# Model weights and licensed/runtime assets
+*.ckpt
+*.pth
+*.pth.tar
+*.pt
+*.pkl
+
+# Large numeric captures and media
+*.npy
+*.npz
+*.jsonl
+*.mp4
+*.avi
+*.mov
+*.webm
+
+# Python caches
+__pycache__/
+*.py[cod]

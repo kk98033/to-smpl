@@ -1,0 +1,15 @@
+{
+  "schema": "smpl-model-lab/fastpath-config-v1",
+  "base_model": "07_hybrid_v3_confidence_limb_gate_0918",
+  "requires_2d_confidence": false,
+  "quality_source": "causal_3d_geometry",
+  "og_stride": 4,
+  "refinement_policy": "lite",
+  "refinement_steps": {
+    "weighted_residual_le_55mm": 0,
+    "weighted_residual_le_75mm": 1,
+    "otherwise": 2
+  },
+  "regional_gate": ["torso", "right_arm", "left_arm"],
+  "production_replacement": false
+}

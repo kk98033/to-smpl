@@ -246,7 +246,11 @@ Bridge 會依 `--diagnostic-log-every` 定期在 stdout 輸出單行 `[bridge] d
 | <code>--device</code> | cuda | PyTorch device |
 | <code>--calibration-frames</code> | 30 | fixed-beta 起始校正幀數 |
 | <code>--calibration-iterations</code> | 100 | 體型校正迭代數 |
-| <code>--iterations</code> | 100 | 每幀擬合迭代數；Docker Compose 為即時用途預設 `SMPL_ITERATIONS=50` |
+| <code>--solver-profile</code> | adaptive-fast | `adaptive-fast` 為 neural prior + batched IK + adaptive refinement；`quality` 保留舊逐幀 optimizer |
+| <code>--learnable-checkpoint</code> | `<smpl-dir>/best_ckpt.pth.tar` | adaptive-fast 所需的 Learnable-SMPLify checkpoint |
+| <code>--iterations</code> | 100 | `quality` 每幀迭代數；Compose 回退設定預設 50 |
+| <code>--adaptive-seed-iterations</code> | 50 | adaptive-fast 第一個可信姿勢的初始化迭代數 |
+| <code>--adaptive-og-stride</code> | 4 | 非連續動作時 neural prior 最大間隔；連續動作仍逐幀執行 |
 | <code>--fit-profile</code> | full | `full` 使用 Body25 0..14；`upper-body` 使用 0..9,12，排除膝與腳踝並凍結腿部 rotation；Compose 預設 upper-body |
 | <code>--beta-limit</code> | 3.0 | 校正 betas 的絕對值上限；0 停用 |
 | <code>--fit-jsonl</code> | disabled | 寫出同幀實際 fitted joints 與 residual |
@@ -263,6 +267,6 @@ Bridge 會依 `--diagnostic-log-every` 定期在 stdout 輸出單行 `[bridge] d
 | <code>--max-facing-mismatch-deg</code> | 90 | torso 與腳掌水平朝向差超標時保留上一姿勢；0 停用 |
 | <code>--diagnostic-log-every</code> | 10 | 每 N 個成功 fit 輸出一筆 structured distortion log；被攔截幀一律記錄；0 停用正常幀定期紀錄 |
 | <code>--robust-huber</code> | off | 啟用 Huber loss |
-| <code>--min-confidence</code> | 0.5 | 目前 fit profile 所選 Body25 點的最低 confidence |
+| <code>--min-confidence</code> | 0.5 | `quality` 的整幀 hard gate；`adaptive-fast` 將 confidence 作為區域 soft weight，沒有 confidence 時使用 causal 3D geometry quality |
 
 完整 CLI 說明可執行 <code>smpl-0901-bridge --help</code>；Unity 封包錄製／重播見 <a href="UNITY_FAKE_SENDER.md">Unity Fake Sender</a>。模型目錄必須包含 <code>smpl/SMPL_NEUTRAL.pkl</code> 與 <code>J_regressor_body25.npy</code>。<code>smpl-0901-send PATH --destination udp://HOST:9100 --fps 30</code> 可用 JSON/JSONL 做輸入重播測試。

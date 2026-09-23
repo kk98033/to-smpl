@@ -6,7 +6,15 @@ script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 models_dir="${SMPL_MODELS_DIR:-${script_dir}/models}"
 output_dir="${SMPL_OUTPUT_DIR:-${script_dir}/artifacts/live}"
 
-for path in "${models_dir}/J_regressor_body25.npy" "${models_dir}/smpl/SMPL_NEUTRAL.pkl"; do
+required_assets=(
+    "${models_dir}/J_regressor_body25.npy"
+    "${models_dir}/smpl/SMPL_NEUTRAL.pkl"
+    "${models_dir}/smplx/SMPLX_NEUTRAL.npz"
+)
+if [[ "${SMPL_SOLVER_PROFILE:-adaptive-fast}" == "adaptive-fast" ]]; then
+    required_assets+=("${models_dir}/best_ckpt.pth.tar")
+fi
+for path in "${required_assets[@]}"; do
     if [[ ! -f "${path}" ]]; then
         echo "required model asset missing: ${path}" >&2
         echo "place SMPL models in ${models_dir} before running" >&2
@@ -25,3 +33,5 @@ fi
 echo "[to-smpl] Image build and model validation complete."
 echo "To start the bridge:"
 echo "  sudo UNITY_HOST=127.0.0.1 docker compose up -d"
+echo "Legacy fallback:"
+echo "  sudo UNITY_HOST=127.0.0.1 SMPL_SOLVER_PROFILE=quality docker compose up -d"

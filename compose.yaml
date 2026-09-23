@@ -29,7 +29,16 @@ services:
           --smpl-dir /models \
           --device cuda \
           --axis-map "${SMPL_AXIS_MAP:-x,-y,-z}" \
+          --solver-profile "${SMPL_SOLVER_PROFILE:-adaptive-fast}" \
+          --learnable-source /opt/to-smpl/archive/Learnable-SMPLify/src \
+          --learnable-checkpoint /models/best_ckpt.pth.tar \
           --iterations "${SMPL_ITERATIONS:-50}" \
+          --adaptive-seed-iterations "${SMPL_ADAPTIVE_SEED_ITERATIONS:-50}" \
+          --adaptive-og-stride "${SMPL_ADAPTIVE_OG_STRIDE:-4}" \
+          --adaptive-coherence-threshold "${SMPL_ADAPTIVE_COHERENCE_THRESHOLD:-0.55}" \
+          --adaptive-speed-threshold "${SMPL_ADAPTIVE_SPEED_THRESHOLD:-0.3}" \
+          --adaptive-medium-steps "${SMPL_ADAPTIVE_MEDIUM_STEPS:-1}" \
+          --adaptive-high-steps "${SMPL_ADAPTIVE_HIGH_STEPS:-2}" \
           --unity-host "$${UNITY_HOST}" \
           --unity-port 9095 \
           --raw-skeleton-host "$${UNITY_HOST}" \
@@ -48,4 +57,6 @@ services:
           --fit-jsonl /output/smpl_fit.jsonl \
           --mesh-preview-json /output/smpl_mesh.json \
           --mesh-preview-faces "${SMPL_MESH_PREVIEW_FACES:-2400}" \
+          --smplx-preview-json /output/smplx_mesh.json \
+          --smplx-preview-faces "${SMPLX_MESH_PREVIEW_FACES:-20908}" \
           --diagnostic-log-every "${SMPL_DIAGNOSTIC_LOG_EVERY:-10}"

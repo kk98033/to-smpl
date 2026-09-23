@@ -412,6 +412,16 @@ def compact_mesh_preview_topology(
     if source.min() < 0 or source.max() >= len(template):
         raise ValueError("SMPL face index is outside the vertex array")
 
+    # A budget at or above the source face count means "keep the licensed
+    # model exactly". Besides avoiding needless work, this is important for
+    # SMPL-X: spatial vertex clustering can merge the inner surfaces of two
+    # nearby limbs even though they are unrelated in the source topology.
+    if max_faces >= len(source):
+        used_vertices = np.unique(source.reshape(-1)).astype(np.int32)
+        reverse = np.full(len(template), -1, dtype=np.int32)
+        reverse[used_vertices] = np.arange(len(used_vertices), dtype=np.int32)
+        return used_vertices, reverse[source].astype(np.int32)
+
     lower = template.min(axis=0)
     extent = np.maximum(template.max(axis=0) - lower, 1e-6)
     best: tuple[np.ndarray, np.ndarray] | None = None
@@ -442,6 +452,58 @@ def compact_mesh_preview_topology(
     if best is None:
         raise ValueError("could not build a non-empty SMPL mesh preview")
     return best
+
+
+def expand_vertex_region_to_faces(
+    faces: np.ndarray,
+    vertex_seed: np.ndarray,
+    rings: int = 2,
+) -> np.ndarray:
+    """Return faces touching a vertex region plus adjacent topology rings."""
+    source = np.asarray(faces, dtype=np.int32)
+    selected_vertices = np.asarray(vertex_seed, dtype=bool).reshape(-1).copy()
+    if source.ndim != 2 or source.shape[1] != 3:
+        raise ValueError("faces must have shape [F,3]")
+    if source.min() < 0 or source.max() >= len(selected_vertices):
+        raise ValueError("face index is outside vertex_seed")
+    if rings < 0:
+        raise ValueError("rings must be non-negative")
+    selected_faces = np.any(selected_vertices[source], axis=1)
+    for _ in range(rings):
+        selected_vertices[source[selected_faces].reshape(-1)] = True
+        selected_faces |= np.any(selected_vertices[source], axis=1)
+    return selected_faces
+
+
+def compact_mesh_preview_preserving_faces(
+    vertices: np.ndarray,
+    faces: np.ndarray,
+    max_faces: int,
+    preserve_face: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Decimate the body while retaining selected small-detail faces exactly."""
+    source = np.asarray(faces, dtype=np.int32)
+    preserve = np.asarray(preserve_face, dtype=bool).reshape(-1)
+    if len(preserve) != len(source):
+        raise ValueError("preserve_face must contain one flag per source face")
+    exact_faces = source[preserve]
+    if len(exact_faces) >= max_faces:
+        raise ValueError(
+            f"max_faces={max_faces} cannot retain {len(exact_faces)} exact faces"
+        )
+    body_vertices, body_faces = compact_mesh_preview_topology(
+        vertices, source[~preserve], max_faces - len(exact_faces)
+    )
+    body_original_faces = body_vertices[body_faces]
+    used_vertices = np.unique(
+        np.concatenate((body_vertices, exact_faces.reshape(-1)))
+    ).astype(np.int32)
+    reverse = np.full(len(vertices), -1, dtype=np.int32)
+    reverse[used_vertices] = np.arange(len(used_vertices), dtype=np.int32)
+    combined_faces = np.concatenate(
+        (reverse[body_original_faces], reverse[exact_faces]), axis=0
+    )
+    return used_vertices, combined_faces.astype(np.int32)
 
 
 def write_json_atomic(path: Path, record: dict[str, object]) -> None:
@@ -566,6 +628,15 @@ def default_smpl_dir() -> Path:
     return RELEASE_ROOT / "models"
 
 
+def default_learnable_source() -> Path:
+    candidates = (
+        RELEASE_ROOT / "archive" / "Learnable-SMPLify" / "src",
+        Path("/opt/to-smpl/archive/Learnable-SMPLify/src"),
+        Path.cwd() / "archive" / "Learnable-SMPLify" / "src",
+    )
+    return next((path for path in candidates if path.exists()), candidates[0])
+
+
 class Smpl0901Bridge:
     def __init__(self, args: argparse.Namespace) -> None:
         import torch
@@ -584,7 +655,17 @@ class Smpl0901Bridge:
         self.prev_root = None
         self.prev_body = None
         self.prev_translation = None
+        self.previous_prediction = None
+        self.adaptive_tracker = None
+        self.last_adaptive_metadata = None
         self.pelvis_anchor = None
+        self.neural_prior = None
+        if args.solver_profile == "adaptive-fast":
+            from .learnable_prior import LearnableSmplifyPrior
+            self.neural_prior = LearnableSmplifyPrior(
+                args.learnable_source, args.learnable_checkpoint,
+                args.smpl_dir, self.device,
+            )
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self.packet_recorder = None
         if args.record_unity_packets is not None:
@@ -617,6 +698,47 @@ class Smpl0901Bridge:
             self.mesh_face_joints = np.argmax(
                 compact_weights[compact_faces].mean(axis=1), axis=1
             ).astype(np.int32)
+        self.smplx_preview = None
+        self.last_smplx_record: dict[str, object] | None = None
+        self.smplx_vertex_indices_torch = None
+        self.smplx_faces: np.ndarray | None = None
+        self.smplx_face_joints: np.ndarray | None = None
+        self.smplx_topology: str | None = None
+        if args.smplx_preview_json is not None:
+            from .smplx_preview import SmplXPreview
+
+            self.smplx_preview = SmplXPreview(args.smplx_model, self.device)
+            full_weights = self.smplx_preview.model.lbs_weights.detach().cpu().numpy()
+            full_faces = self.smplx_preview.faces
+            hand_influence = (
+                full_weights[:, 20:22].sum(axis=1)
+                + full_weights[:, 25:55].sum(axis=1)
+            )
+            preserve_hands = expand_vertex_region_to_faces(
+                full_faces, hand_influence > 0.01, rings=2
+            )
+            vertex_indices, compact_faces = compact_mesh_preview_preserving_faces(
+                self.smplx_preview.model.v_template.detach().cpu().numpy(),
+                full_faces,
+                args.smplx_preview_faces,
+                preserve_hands,
+            )
+            self.smplx_vertex_indices_torch = torch.tensor(
+                vertex_indices, dtype=torch.long, device=self.device
+            )
+            self.smplx_faces = compact_faces
+            self.smplx_topology = (
+                "official_full_topology"
+                if args.smplx_preview_faces >= len(full_faces)
+                else "clustered_body_official_hands_two_wrist_rings"
+            )
+            compact_weights = (
+                self.smplx_preview.model.lbs_weights[self.smplx_vertex_indices_torch]
+                .detach().cpu().numpy()
+            )
+            self.smplx_face_joints = np.argmax(
+                compact_weights[compact_faces].mean(axis=1), axis=1
+            ).astype(np.int32)
 
     def close(self) -> None:
         if self.packet_recorder is not None:
@@ -646,7 +768,10 @@ class Smpl0901Bridge:
         selected = FIT_PROFILES[self.args.fit_profile]
         if (
             not np.isfinite(body25[list(selected)]).all()
-            or not np.all(body25_conf[list(selected)] >= self.args.min_confidence)
+            or (
+                self.args.solver_profile == "quality"
+                and not np.all(body25_conf[list(selected)] >= self.args.min_confidence)
+            )
         ):
             raise ValueError(
                 f"{self.args.fit_profile} input is incomplete/non-finite; "
@@ -666,47 +791,56 @@ class Smpl0901Bridge:
                 )
             self._calibrate()
 
-        if self.prev_root is None:
-            root_np = analytical_root_seed(target_np)
-            init_root = self.torch.tensor(root_np[None], dtype=self.torch.float32, device=self.device)
-        else:
-            init_root = self.prev_root
-        target = self.torch.tensor(target_np[None], dtype=self.torch.float32, device=self.device)
+        target = self.torch.tensor(
+            target_np[None], dtype=self.torch.float32, device=self.device
+        )
         previous_root_np = (
             None if self.prev_root is None
-            else self.prev_root[0].detach().cpu().numpy()
+            else self.prev_root.detach().cpu().numpy().reshape(3)
         )
         previous_body_np = (
             None if self.prev_body is None
-            else self.prev_body[0].detach().cpu().numpy()
+            else self.prev_body.detach().cpu().numpy().reshape(23, 3)
         )
-        result = fit_fixed_betas_soft_target(
-            self.smpl_layer,
-            self.regressor,
-            target,
-            self.fixed_betas,
-            init_root,
-            init_body=self.prev_body,
-            init_translation=self.prev_translation,
-            iterations=self.args.iterations,
-            joint_indices=selected,
-            endpoint_weight=self.args.endpoint_weight,
-            torso_normal_weight=self.args.torso_weight,
-            spine_stability_weight=self.args.spine_stability_weight,
-            spine_pose_indices=SPINE_BODY_POSE_INDICES,
-            body_facing_weight=self.args.body_facing_weight,
-            temporal_smooth_weight=self.args.temporal_weight,
-            prev_body_pose=self.prev_body,
-            use_huber=self.args.robust_huber,
-            joint_weights=self.torch.tensor(
-                body25_conf[None], dtype=self.torch.float32, device=self.device
-            ),
-            frozen_pose_indices=(
-                LOWER_BODY_SMPL_POSE_INDICES
-                if self.args.fit_profile == "upper-body" else ()
-            ),
-            zero_pose_indices=FORWARD_LOCK_BODY_POSE_INDICES,
-        )
+        self.last_adaptive_metadata = None
+        if self.args.solver_profile == "adaptive-fast" and self.prev_root is not None:
+            result, self.last_adaptive_metadata = self.adaptive_tracker.step(
+                target_np, body25_conf, frame.ptp_epoch_ns,
+                self.prev_root, self.prev_body, self.prev_translation,
+                self.previous_prediction,
+            )
+        else:
+            if self.prev_root is None:
+                root_np = analytical_root_seed(target_np)
+                init_root = self.torch.tensor(
+                    root_np[None], dtype=self.torch.float32, device=self.device
+                )
+            else:
+                init_root = self.prev_root
+            iterations = (
+                self.args.adaptive_seed_iterations
+                if self.args.solver_profile == "adaptive-fast" else self.args.iterations
+            )
+            result = fit_fixed_betas_soft_target(
+                self.smpl_layer, self.regressor, target, self.fixed_betas, init_root,
+                init_body=self.prev_body, init_translation=self.prev_translation,
+                iterations=iterations, joint_indices=selected,
+                endpoint_weight=self.args.endpoint_weight,
+                torso_normal_weight=self.args.torso_weight,
+                spine_stability_weight=self.args.spine_stability_weight,
+                spine_pose_indices=SPINE_BODY_POSE_INDICES,
+                body_facing_weight=self.args.body_facing_weight,
+                temporal_smooth_weight=self.args.temporal_weight,
+                prev_body_pose=self.prev_body, use_huber=self.args.robust_huber,
+                joint_weights=self.torch.tensor(
+                    body25_conf[None], dtype=self.torch.float32, device=self.device
+                ),
+                frozen_pose_indices=(
+                    LOWER_BODY_SMPL_POSE_INDICES
+                    if self.args.fit_profile == "upper-body" else ()
+                ),
+                zero_pose_indices=FORWARD_LOCK_BODY_POSE_INDICES,
+            )
         pose = np.zeros(156, dtype=np.float32)
         root = result.root_orient[0].cpu().numpy()
         body = result.body_pose[0].reshape(23, 3).cpu().numpy()
@@ -778,7 +912,7 @@ class Smpl0901Bridge:
                     "FAILED_HOLD" if safety_reasons else
                     "TRACKING" if residual < 50.0 and torso_deg < 10.0 else "RECOVERED"
                 ),
-                "stepsUsed": self.args.iterations,
+                "stepsUsed": result.iterations,
                 "reasons": safety_reasons,
             },
         }
@@ -796,6 +930,7 @@ class Smpl0901Bridge:
             "axis_map": self.args.axis_map,
             "fit_profile": self.args.fit_profile,
             "solver": {
+                "profile": self.args.solver_profile,
                 "endpoint_weight": self.args.endpoint_weight,
                 "torso_weight": self.args.torso_weight,
                 "spine_stability_weight": self.args.spine_stability_weight,
@@ -821,6 +956,19 @@ class Smpl0901Bridge:
             "worst_target_joint": worst_target_joint,
             "pose_diagnostics": pose_diagnostics,
             "fixed_betas": self.fixed_betas.cpu().numpy().tolist(),
+            "adaptive": (
+                None if self.last_adaptive_metadata is None else {
+                    "selected_root": self.last_adaptive_metadata.selected_root,
+                    "neural_prior_used": self.last_adaptive_metadata.neural_prior_used,
+                    "motion_coherence": self.last_adaptive_metadata.motion_coherence,
+                    "motion_speed_mps": self.last_adaptive_metadata.motion_speed_mps,
+                    "refinement_steps": self.last_adaptive_metadata.refinement_steps,
+                    "region_updates": self.last_adaptive_metadata.region_updates,
+                    "region_reasons": self.last_adaptive_metadata.region_reasons,
+                    "region_residual_mm": self.last_adaptive_metadata.region_residual_mm,
+                    "region_confidence": self.last_adaptive_metadata.region_confidence,
+                }
+            ),
         }
         if self.mesh_vertex_indices_torch is not None and self.mesh_faces is not None:
             preview_vertices = (
@@ -842,6 +990,42 @@ class Smpl0901Bridge:
                 "faces": self.mesh_faces.tolist(),
                 "face_joint": self.mesh_face_joints.tolist(),
             }
+        if self.smplx_preview is not None and self.smplx_faces is not None:
+            smplx = self.smplx_preview.forward(
+                root,
+                body,
+                self.fixed_betas,
+                pred_smpl24,
+                left_hand,
+                frame.confidence[17:38],
+                right_hand,
+                frame.confidence[38:59],
+            )
+            preview_vertices = (
+                smplx.vertices[0]
+                .index_select(0, self.smplx_vertex_indices_torch)
+                .detach().cpu().numpy()
+            )
+            self.last_smplx_record = {
+                "schema": "smpl-0901.smplx-preview/v1",
+                "frame": frame.frame_id,
+                "timestamp_ns": frame.ptp_epoch_ns,
+                "accepted": not bool(safety_reasons),
+                "units": "m",
+                "coordinate_frame": "smpl_axes_pelvis_relative",
+                "fit_profile": self.args.fit_profile,
+                "source_vertex_count": int(smplx.vertices.shape[1]),
+                "left_hand_valid": smplx.left_valid,
+                "right_hand_valid": smplx.right_valid,
+                "surface_retarget": "skin_weighted_smpl24",
+                "mesh_topology": self.smplx_topology,
+                "retargeted_smpl22": _json_points(
+                    smplx.joints[0, :22].detach().cpu().numpy()
+                ),
+                "vertices": _json_points(preview_vertices),
+                "faces": self.smplx_faces.tolist(),
+                "face_joint": self.smplx_face_joints.tolist(),
+            }
         if safety_reasons:
             raise UnsafeFit({
                 "schema": "smpl-0901.distortion-log/v1",
@@ -862,9 +1046,24 @@ class Smpl0901Bridge:
                 "warning_joints": pose_diagnostics["warning_joints"],
             }, candidate_packet)
 
-        self.prev_root = result.root_orient
-        self.prev_body = result.body_pose
-        self.prev_translation = result.translation
+        if self.args.solver_profile == "adaptive-fast" and self.adaptive_tracker is None:
+            from .adaptive_tracker import AdaptiveFastTracker
+            self.adaptive_tracker = AdaptiveFastTracker(
+                self.smpl_layer, self.regressor, self.fixed_betas, self.neural_prior,
+                og_stride=self.args.adaptive_og_stride,
+                coherence_threshold=self.args.adaptive_coherence_threshold,
+                speed_threshold=self.args.adaptive_speed_threshold,
+                medium_steps=self.args.adaptive_medium_steps,
+                high_steps=self.args.adaptive_high_steps,
+            )
+            self.adaptive_tracker.initialize(
+                target_np, frame.ptp_epoch_ns, result.root_orient,
+                result.body_pose, result.translation, pred_smpl24,
+            )
+        self.prev_root = result.root_orient.detach()
+        self.prev_body = result.body_pose.detach()
+        self.prev_translation = result.translation.detach()
+        self.previous_prediction = result.pred_body25[0].detach().cpu().numpy()
         return candidate_packet, residual
 
     def send(self, packet: bytes) -> None:
@@ -925,6 +1124,22 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--calibration-iterations", type=int, default=100)
     parser.add_argument("--iterations", type=int, default=100)
     parser.add_argument(
+        "--solver-profile", choices=("adaptive-fast", "quality"),
+        default="adaptive-fast",
+        help="adaptive-fast is the v5 production tracker; quality keeps the legacy optimizer",
+    )
+    parser.add_argument(
+        "--learnable-source", type=Path,
+        default=default_learnable_source(),
+    )
+    parser.add_argument("--learnable-checkpoint", type=Path)
+    parser.add_argument("--adaptive-seed-iterations", type=int, default=50)
+    parser.add_argument("--adaptive-og-stride", type=int, default=4)
+    parser.add_argument("--adaptive-coherence-threshold", type=float, default=0.55)
+    parser.add_argument("--adaptive-speed-threshold", type=float, default=0.3)
+    parser.add_argument("--adaptive-medium-steps", type=int, default=1)
+    parser.add_argument("--adaptive-high-steps", type=int, default=2)
+    parser.add_argument(
         "--fit-profile", choices=tuple(FIT_PROFILES), default="full",
         help="full fits through ankles; upper-body ignores occluded legs and freezes their rotations",
     )
@@ -943,6 +1158,21 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--mesh-preview-faces", type=int, default=2400,
         help="maximum triangles in the connected, vertex-clustered SMPL preview",
+    )
+    parser.add_argument(
+        "--smplx-model", type=Path,
+        help="licensed SMPL-X neutral NPZ used only for the Dashboard preview",
+    )
+    parser.add_argument(
+        "--smplx-preview-json", type=Path,
+        help="atomically overwrite a latest-only SMPL-X body and hand surface",
+    )
+    parser.add_argument(
+        "--smplx-preview-faces", type=int, default=20908,
+        help=(
+            "maximum triangles in the Dashboard-only SMPL-X body/hand surface; "
+            "20908 retains the complete official neutral-model topology"
+        ),
     )
     parser.add_argument("--endpoint-weight", type=float, default=0.5)
     parser.add_argument("--torso-weight", type=float, default=0.05)
@@ -979,7 +1209,10 @@ def parse_args() -> argparse.Namespace:
         "--robust-huber", action="store_true",
         help="optional noisy-input robustness; off preserves the measured 0901 squared-loss method",
     )
-    parser.add_argument("--min-confidence", type=float, default=0.5)
+    parser.add_argument(
+        "--min-confidence", type=float, default=0.5,
+        help="quality profile hard gate; adaptive-fast uses confidence as a soft regional weight",
+    )
     return parser.parse_args()
 
 
@@ -996,13 +1229,32 @@ def main() -> int:
         args.max_facing_mismatch_deg,
     ) < 0:
         raise ValueError("fit safety thresholds must be non-negative")
+    if args.learnable_checkpoint is None:
+        args.learnable_checkpoint = args.smpl_dir / "best_ckpt.pth.tar"
+    if args.solver_profile == "adaptive-fast" and not args.learnable_checkpoint.exists():
+        print(
+            f"adaptive-fast checkpoint not found: {args.learnable_checkpoint}; "
+            "use --solver-profile quality to run the retained legacy solver",
+            file=sys.stderr,
+        )
+        return 2
     if not (args.smpl_dir / "smpl" / "SMPL_NEUTRAL.pkl").exists():
         print(
             f"SMPL model not found: {args.smpl_dir / 'smpl' / 'SMPL_NEUTRAL.pkl'}",
             file=sys.stderr,
         )
         return 2
+    if args.smplx_preview_json is not None:
+        if args.smplx_model is None:
+            args.smplx_model = args.smpl_dir / "smplx" / "SMPLX_NEUTRAL.npz"
+        if not args.smplx_model.exists():
+            print(
+                f"SMPL-X preview model not found: {args.smplx_model}",
+                file=sys.stderr,
+            )
+            return 2
     print(f"[bridge] input={args.input}")
+    print(f"[bridge] solver={args.solver_profile}")
     print(f"[bridge] Unity={args.unity_host}:{args.unity_port}, units={args.input_units}, axis={args.axis_map}")
     raw_host = args.raw_skeleton_host or args.unity_host
     print(
@@ -1022,6 +1274,12 @@ def main() -> int:
         print(
             f"[bridge] mesh preview={args.mesh_preview_json} "
             f"faces={args.mesh_preview_faces}"
+        )
+    if args.smplx_preview_json is not None:
+        args.smplx_preview_json.parent.mkdir(parents=True, exist_ok=True)
+        print(
+            f"[bridge] SMPL-X preview={args.smplx_preview_json} "
+            f"model={args.smplx_model} faces={args.smplx_preview_faces}"
         )
     received = sent = held = candidate_sent = dropped = raw_sent = raw_dropped = 0
     try:
@@ -1047,6 +1305,8 @@ def main() -> int:
                     fit_stream.flush()
                 if args.mesh_preview_json is not None and bridge.last_mesh_record is not None:
                     write_json_atomic(args.mesh_preview_json, bridge.last_mesh_record)
+                if args.smplx_preview_json is not None and bridge.last_smplx_record is not None:
+                    write_json_atomic(args.smplx_preview_json, bridge.last_smplx_record)
                 sent += 1
                 if (
                     args.diagnostic_log_every > 0
@@ -1101,6 +1361,8 @@ def main() -> int:
                     fit_stream.flush()
                 if args.mesh_preview_json is not None and bridge.last_mesh_record is not None:
                     write_json_atomic(args.mesh_preview_json, bridge.last_mesh_record)
+                if args.smplx_preview_json is not None and bridge.last_smplx_record is not None:
+                    write_json_atomic(args.smplx_preview_json, bridge.last_smplx_record)
                 print(
                     "[bridge] distortion "
                     + json.dumps(error.diagnostic, allow_nan=False, separators=(",", ":")),

@@ -14,6 +14,8 @@ dependencies = [
   "torch>=2.1",
   "smplx>=0.1.28",
   "chumpy>=0.70",
+  "PyYAML>=6.0",
+  "easydict>=1.10",
 ]
 
 [project.scripts]

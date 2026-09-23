@@ -1,6 +1,6 @@
 # Third-party notices
 
-`smpl_0901/fixed_betas_fitter.py` 與 `smpl_0901/frame0_initializer.py` 是由專案內的 Learnable-SMPLify 實作整理而來；原始程式採 MIT License，Copyright (c) 2025 Yuchen Yang。
+`smpl_0901/fixed_betas_fitter.py` 與 `smpl_0901/frame0_initializer.py` 是由專案內的 Learnable-SMPLify 實作整理而來；`adaptive-fast` 亦會載入 `archive/Learnable-SMPLify/src` 的 neural prior。原始程式採 MIT License，Copyright (c) 2025 Yuchen Yang；Docker image 會一併保留原始 `LICENSE`。
 
 本專案也透過 `smplx` 載入 SMPL。這份私人 repository 以 Git LFS 保存 SMPL 人體模型參數；存取者仍必須遵守 SMPL 官方授權，且不得因此將模型再公開散布。
 

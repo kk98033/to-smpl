@@ -2,7 +2,12 @@
 
 這是一份可獨立放上 GitHub 的「`main_predict` 59 點 3D 關節 → SMPL → Unity」常駐即時轉換服務。它接在 3D 姿態估計管線（`dt-pose`）後面，不負責相機影像 IPC、2D pose 或 DLT；**輸入是已完成 3D 預測的 JSON 串流，原生支援新版 `dt-pose.pose3d/v1` 並向後相容 `factory_59pt_body_hands`；Bridge 平行輸出 Unity `SMV2`（UDP 9095）與原始 59 點 `RSV1`（UDP 9096）二進位封包**。
 
-> 生產策略使用固定體型（Fixed Betas）、姿勢 soft-target、跨幀 warm start、root motion 與原始 Hand21 混合驅動。工廠畫面下半身常受遮擋時，Compose 預設採 `upper-body` 模式，避免不可信的膝／腳踝把全身擬合拉壞。
+> 正式預設為 `adaptive-fast`：固定體型後，以 Learnable-SMPLify neural prior、cached/batched Joint IK、0/1/2（連續動作 0/2/4）步短最佳化與區域安全閘門追蹤；原始 Hand21 繼續獨立驅動手指。舊 50-step soft-target 完整保留為 `quality` 回退模式。
+
+`adaptive-fast` 的幾何信心不再以單一初始化幀鎖定骨長。前 15 幀使用 causal
+median 建立 reference，之後才進入慢速更新；若 reference 與一段持續穩定的觀測
+長期分歧，會在保守 streak 門檻後 recovery。這可避免第一幀肘／腕遮擋造成單側
+手臂永久 `confidence<0.35`、永遠沿用上一幀的 deadlock。
 
 ---
 
@@ -115,6 +120,8 @@ RSV1 固定為 little-endian、封包大小 **1032 Bytes**，小於標準 Ethern
 
 指定 `--mesh-preview-json PATH` 時，Bridge 會以 atomic replace 維護一份最新候選 frame 的 `smpl-0901.mesh-preview/v1`，包含真正 SMPL forward surface 的 vertex-cluster 簡化後的 compact vertices 與連續 faces，並以 `accepted` 標示是否通過安全門檻。預設 `--mesh-preview-faces 2400`，供 Dashboard 除錯而不讓 append-only JSONL 快速膨脹；此檔案不是 UDP 協定，也不影響 Unity 輸出。
 
+指定 `--smplx-preview-json PATH` 時，Bridge 會讀取 `--smplx-model`（預設 `models/smplx/SMPLX_NEUTRAL.npz`），將已擬合的身體旋轉轉移至 SMPL-X，並由同幀 Hand21 方向解出左右手腕及 15 個手指關節，輸出 `smpl-0901.smplx-preview/v1`。Dashboard 的 **SMPL-X** 頁籤顯示此官方模型表面，並疊上原始 59 點及擬合 Body25；預設保留官方模型完整的 20,908 個三角面，避免低面數空間聚類在雙腿或手腕等相近表面之間產生錯誤連面。此輸出只供診斷，不更動 Unity UDP 格式。
+
 Bridge 預設每 10 個成功 fit 輸出一筆 `[bridge] distortion {JSON}` structured log；以 `SMPL_DIAGNOSTIC_LOG_EVERY` 調整 Compose 間隔，`1` 表示每幀，`0` 停用。候選姿勢若超過 MPJPE 100 mm、任一關節 twist 100°、單幀 rotation delta 90°，或上半身／腳掌水平朝向差 90°，Bridge 會記錄 `accepted:false`、`action:"hold_previous"`，且不更新已接受的 fitting 狀態；但仍會將同一候選用 SMV2 送出，並標記 `inputValid=false`、`FAILED_HOLD` 與拒絕原因。新版 Unity 的 `Show Held Fit` 預設開啟，會顯示這份與 Dashboard 相同的候選結果；關閉後則採嚴格模式並保留上一個正常姿勢。四個門檻可分別用 `SMPL_MAX_FIT_RESIDUAL_MM`、`SMPL_MAX_TWIST_DEG`、`SMPL_MAX_DELTA_DEG`、`SMPL_MAX_FACING_MISMATCH_DEG` 調整，設為 `0` 可個別停用。
 
 ## 4. 0901 擬合策略與效能
@@ -126,6 +133,15 @@ Bridge 預設每 10 個成功 fit 輸出一筆 `[bridge] distortion {JSON}` stru
 | KAMA 100 iters | 15.35 mm | — | — | 62.8 ms (15.9 FPS) |
 | KAMA adaptive | 8.18 mm | — | — | 56.9 ms (17.5 FPS) |
 | **Fixed Betas + Soft Target（本版）** | **38.03 mm** | **9.44 mm** | **3.37°** | **31.9 ms / 31.3 FPS (全速即時)** |
+
+### 正式 solver profile
+
+| Profile | 用途 | Rig B 同片段實測 |
+| :--- | :--- | :--- |
+| `adaptive-fast`（預設） | 即時場域；neural prior + batched IK + adaptive refinement + regional gate | steady-state 49.39 FPS、p50 50.38 mm、31/31 accepted |
+| `quality` | 舊版 50-step optimizer；A/B 與緊急回退 | 精度優先，速度約 2–4 FPS |
+
+上述正式 Bridge smoke test 使用既有 Rig B 最長連續 accepted 片段（20 幀體型校正、1 幀 seed、30 幀 steady state）；時間只計 SMPL solver，不含上游 Pipeline、UDP、Dashboard 與 Unity。`adaptive-fast` 的首幀使用高品質 optimizer 建立可信 seed，之後才切換快速追蹤。切換 profile 不改變 UDP 9100、SMV2/9095、RSV1/9096 或 Unity 設定；同一時間只能啟動一個 Bridge。
 
 ### 核心演算法亮點
 1. **Fixed Betas 體型鎖定**：預設收集 30 個通過目前 profile 品質閘門的 frame，估計一次性身材參數 $\beta$，並將每個係數限制在 `[-3,3]`，避免遮擋點被永久吸收到體型。
@@ -200,6 +216,8 @@ smpl-0901-bridge \
   --input udp://0.0.0.0:9100 \
   --smpl-dir /path/to/to-smpl/models \
   --device cuda \
+  --solver-profile adaptive-fast \
+  --learnable-checkpoint /path/to/to-smpl/models/best_ckpt.pth.tar \
   --unity-host 127.0.0.1 \
   --unity-port 9095 \
   --raw-skeleton-host 127.0.0.1 \

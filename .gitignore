@@ -19,3 +19,6 @@ unity/Library/
 unity/Temp/
 unity/Logs/
 unity/obj/
+# Licensed/runtime-only body model and neural prior weights
+models/smplx/
+models/best_ckpt.pth.tar

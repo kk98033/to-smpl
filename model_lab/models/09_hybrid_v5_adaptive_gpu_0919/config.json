@@ -1,0 +1,18 @@
+{
+  "schema": "smpl-model-lab/adaptive-batched-config-v1",
+  "base_model": "08_hybrid_v4_fastpath_0918",
+  "requires_2d_confidence": false,
+  "solver_version": "v5",
+  "schedule": "adaptive",
+  "motion_window_frames": 5,
+  "motion_coherence_threshold": 0.55,
+  "motion_speed_threshold_mps": 0.3,
+  "max_og_stride": 4,
+  "stable_refinement_steps": [0, 1, 2],
+  "coherent_motion_refinement_steps": [0, 2, 4],
+  "cache_fixed_beta_rest_joints": true,
+  "two_level_arm_ik": true,
+  "batch_root_hypotheses": true,
+  "compile_smpl": false,
+  "production_replacement": false
+}

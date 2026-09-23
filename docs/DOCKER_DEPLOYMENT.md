@@ -69,8 +69,11 @@ cd to-smpl
 to-smpl/
 └── models/
     ├── J_regressor_body25.npy
-    └── smpl/
-        └── SMPL_NEUTRAL.pkl
+    ├── best_ckpt.pth.tar
+    ├── smpl/
+    │   └── SMPL_NEUTRAL.pkl
+    └── smplx/
+        └── SMPLX_NEUTRAL.npz
 ~~~
 
 檢查：
@@ -78,9 +81,40 @@ to-smpl/
 ~~~bash
 test -r models/J_regressor_body25.npy
 test -r models/smpl/SMPL_NEUTRAL.pkl
+test -r models/best_ckpt.pth.tar
+test -r models/smplx/SMPLX_NEUTRAL.npz
+sha256sum models/best_ckpt.pth.tar models/smplx/SMPLX_NEUTRAL.npz
 ~~~
 
 若模型放在其他位置，啟動時透過 <code>SMPL_MODELS_DIR</code> 指定絕對路徑。Container 只會唯讀掛載該目錄。SMPL 模型受原始授權條款約束，部署人員必須自行確認公司的使用與散布權限。
+
+### Solver 模式與權重
+
+Compose 預設使用 `SMPL_SOLVER_PROFILE=adaptive-fast`。此模式需要 `models/best_ckpt.pth.tar`，驗證檔 SHA-256 為 `ae3ff40bfab93a339ce6f1da53194d667c2812d14d182fa619a6c32736056e35`。權重受原始授權限制且已排除於 Git。
+
+幾何 confidence 的骨長 reference 使用前 15 幀 causal median，而不是單一幀。
+診斷 JSON 的 `adaptive.region_confidence`、`region_updates` 與 `region_reasons`
+可直接判斷 torso／左右臂是否被 regional gate 保持。若單側手臂長時間不動，先
+檢查該區域是否持續 `confidence<0.35`，不可直接歸因於 Unity bone binding。
+
+保留的舊版 optimizer 可隨時回退，不需修改 Unity：
+
+```bash
+sudo UNITY_HOST=<UNITY_IP> \
+  SMPL_SOLVER_PROFILE=quality \
+  SMPL_ITERATIONS=50 \
+  docker compose up -d --force-recreate bridge
+```
+
+恢復正式快速模式：
+
+```bash
+sudo UNITY_HOST=<UNITY_IP> \
+  SMPL_SOLVER_PROFILE=adaptive-fast \
+  docker compose up -d --force-recreate bridge
+```
+
+兩種模式不可同時監聽 UDP 9100。
 
 ## 5. 建置
 
@@ -141,7 +175,7 @@ sudo UNITY_HOST=192.168.200.1 SMPL_FIT_PROFILE=full \
   docker compose up -d --force-recreate bridge
 ~~~
 
-每個擬合候選 frame 都會寫至 `artifacts/live/smpl_fit.jsonl`，並以 `accepted` 標示是否通過安全門檻。通過與未通過的候選都會送往 Unity；未通過者在 SMV2 中標記為 `inputValid=false` 與 `FAILED_HOLD`，不會推進 Bridge 的已接受 fitting 狀態。同時會以 latest-only atomic snapshot 寫入 `artifacts/live/smpl_mesh.json`，供 Dashboard 的 **SMPL Mesh** 除錯頁籤使用；`SMPL_MESH_PREVIEW_FACES` 可調整 vertex-cluster 簡化後的三角面上限，預設 2400。若 Dashboard 位於相鄰的 `digital-twin-pose` repo，啟動時共用它的輸出目錄：
+每個擬合候選 frame 都會寫至 `artifacts/live/smpl_fit.jsonl`，並以 `accepted` 標示是否通過安全門檻。通過與未通過的候選都會送往 Unity；未通過者在 SMV2 中標記為 `inputValid=false` 與 `FAILED_HOLD`，不會推進 Bridge 的已接受 fitting 狀態。同時會以 latest-only atomic snapshot 寫入 `artifacts/live/smpl_mesh.json`，供 Dashboard 的 **SMPL Mesh** 除錯頁籤使用；`SMPL_MESH_PREVIEW_FACES` 可調整 vertex-cluster 簡化後的三角面上限，預設 2400。 Bridge 也會寫入 `artifacts/live/smplx_mesh.json`，供 **SMPL-X** 頁籤顯示官方人體／手指表面以及同幀原始與擬合骨架；`SMPLX_MESH_PREVIEW_FACES` 預設為 20908，完整保留官方 SMPL-X 拓樸；若手動降低面數，低面數空間聚類可能在彼此靠近的肢體間產生顯示瑕疵。若 Dashboard 位於相鄰的 `digital-twin-pose` repo，啟動時共用它的輸出目錄：
 
 ~~~bash
 sudo UNITY_HOST=192.168.200.1 \

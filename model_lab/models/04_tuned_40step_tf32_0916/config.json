@@ -1,0 +1,22 @@
+{
+  "schema": "smpl-model-lab/config-v1",
+  "model_id": "04_tuned_40step_tf32_0916",
+  "iterations": 40,
+  "learning_rate": 0.03,
+  "float32_matmul_precision": "high",
+  "allow_tf32": true,
+  "fit_profile": "upper-body",
+  "endpoint_weight": 0.5,
+  "torso_normal_weight": 0.05,
+  "spine_stability_weight": 0.02,
+  "body_facing_weight": 0.01,
+  "temporal_smooth_weight": 0.01,
+  "lower_body_locked": true,
+  "forward_lock_body_pose_indices": [11, 14, 19, 20],
+  "safety_gate": {
+    "max_fit_residual_mm": 100.0,
+    "max_twist_deg": 100.0,
+    "max_delta_deg": 90.0,
+    "max_facing_mismatch_deg": 90.0
+  }
+}
