@@ -39,6 +39,7 @@ services:
           --adaptive-speed-threshold "${SMPL_ADAPTIVE_SPEED_THRESHOLD:-0.3}" \
           --adaptive-medium-steps "${SMPL_ADAPTIVE_MEDIUM_STEPS:-1}" \
           --adaptive-high-steps "${SMPL_ADAPTIVE_HIGH_STEPS:-2}" \
+          --reinitialize-after-rejections "${SMPL_REINITIALIZE_AFTER_REJECTIONS:-8}" \
           --unity-host "$${UNITY_HOST}" \
           --unity-port 9095 \
           --raw-skeleton-host "$${UNITY_HOST}" \

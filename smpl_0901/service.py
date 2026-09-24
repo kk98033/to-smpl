@@ -659,6 +659,8 @@ class Smpl0901Bridge:
         self.adaptive_tracker = None
         self.last_adaptive_metadata = None
         self.pelvis_anchor = None
+        self.last_input_ptp_ns = None
+        self.consecutive_unsafe = 0
         self.neural_prior = None
         if args.solver_profile == "adaptive-fast":
             from .learnable_prior import LearnableSmplifyPrior
@@ -750,6 +752,35 @@ class Smpl0901Bridge:
             self.packet_recorder.close()
         self.sock.close()
 
+    def _reset_temporal_fit(self, *, reset_anchor: bool, reason: str) -> None:
+        """Drop causal solver state while retaining the calibrated body shape.
+
+        PK-SSM can explicitly re-initialize after an occlusion and Fake Sender
+        can rewind PTP at a loop boundary. Neither event should force the
+        adaptive solver to keep comparing a new track with an unrelated old
+        pose. Fixed betas survive because they describe the same subject.
+        """
+        self.prev_root = None
+        self.prev_body = None
+        self.prev_translation = None
+        self.previous_prediction = None
+        self.adaptive_tracker = None
+        self.last_adaptive_metadata = None
+        self.consecutive_unsafe = 0
+        if reset_anchor:
+            self.pelvis_anchor = None
+        print(f"[bridge] temporal fit reset: {reason}", flush=True)
+
+    def _observe_stream_timestamp(self, timestamp_ns: int) -> None:
+        current = int(timestamp_ns)
+        previous = self.last_input_ptp_ns
+        if previous is not None and current <= previous:
+            self._reset_temporal_fit(
+                reset_anchor=True,
+                reason=f"PTP rewind/non-monotonic timestamp {previous} -> {current}",
+            )
+        self.last_input_ptp_ns = current
+
     def _calibrate(self) -> None:
         from .fixed_betas_fitter import estimate_fixed_betas
 
@@ -768,6 +799,7 @@ class Smpl0901Bridge:
         from .protocol_v2 import wrist_local_hand
         from .protocol_v2_udp import pack_protocol_v2_frame
 
+        self._observe_stream_timestamp(frame.ptp_epoch_ns)
         body25, left_hand, right_hand = body25_from_factory59(frame.joints)
         body25_conf = body25_confidence_from_factory59(frame.confidence)
         selected = FIT_PROFILES[self.args.fit_profile]
@@ -888,6 +920,18 @@ class Smpl0901Bridge:
             facing_mismatch_deg=facing_mismatch_deg,
             max_facing_mismatch_deg=self.args.max_facing_mismatch_deg,
         )
+        if safety_reasons:
+            self.consecutive_unsafe += 1
+        else:
+            self.consecutive_unsafe = 0
+        reinitialize_after = int(getattr(
+            self.args, "reinitialize_after_rejections", 8
+        ))
+        reinitialize_next = bool(
+            safety_reasons
+            and reinitialize_after > 0
+            and self.consecutive_unsafe >= reinitialize_after
+        )
         input_score = float(np.mean(frame.confidence))
         packet_frame = {
             "protocolVersion": 2,
@@ -958,6 +1002,8 @@ class Smpl0901Bridge:
             "fit_elapsed_ms": result.elapsed_seconds * 1000.0,
             "fit_iterations": result.iterations,
             "body_facing_mismatch_deg": facing_mismatch_deg,
+            "consecutive_unsafe": int(self.consecutive_unsafe),
+            "reinitialize_next": reinitialize_next,
             "worst_target_joint": worst_target_joint,
             "pose_diagnostics": pose_diagnostics,
             "fixed_betas": self.fixed_betas.cpu().numpy().tolist(),
@@ -1032,6 +1078,13 @@ class Smpl0901Bridge:
                 "face_joint": self.smplx_face_joints.tolist(),
             }
         if safety_reasons:
+            unsafe_streak = int(self.consecutive_unsafe)
+            if reinitialize_next:
+                self._reset_temporal_fit(
+                    reset_anchor=False,
+                    reason=(f"{unsafe_streak} consecutive unsafe fits; "
+                            "requesting a fresh Frame-0 seed"),
+                )
             raise UnsafeFit({
                 "schema": "smpl-0901.distortion-log/v1",
                 "frame": frame.frame_id,
@@ -1049,6 +1102,8 @@ class Smpl0901Bridge:
                 "worst_twist": pose_diagnostics["worst_twist"],
                 "worst_delta": pose_diagnostics["worst_delta"],
                 "warning_joints": pose_diagnostics["warning_joints"],
+                "consecutive_unsafe": unsafe_streak,
+                "reinitialize_next": reinitialize_next,
             }, candidate_packet)
 
         if self.args.solver_profile == "adaptive-fast" and self.adaptive_tracker is None:
@@ -1149,6 +1204,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--adaptive-medium-steps", type=int, default=1)
     parser.add_argument("--adaptive-high-steps", type=int, default=2)
     parser.add_argument(
+        "--reinitialize-after-rejections", type=int, default=8,
+        help=("discard temporal pose state and run a fresh Frame-0 seed after "
+              "this many consecutive safety-gate rejections; 0 disables"),
+    )
+    parser.add_argument(
         "--fit-profile", choices=tuple(FIT_PROFILES), default="full",
         help="full fits through ankles; upper-body ignores occluded legs and freezes their rotations",
     )
@@ -1229,6 +1289,8 @@ def main() -> int:
     args = parse_args()
     if args.diagnostic_log_every < 0:
         raise ValueError("diagnostic log interval must be non-negative")
+    if args.reinitialize_after_rejections < 0:
+        raise ValueError("reinitialize-after-rejections must be non-negative")
     if args.body_facing_weight < 0:
         raise ValueError("body facing weight must be non-negative")
     if args.spine_stability_weight < 0:

@@ -358,6 +358,51 @@ class ProtocolTests(unittest.TestCase):
         self.assertEqual(decoded["frameId"], 9)
         self.assertEqual(decoded["coordinateFrame"], "factory-world")
 
+
+    def test_temporal_fit_reset_keeps_shape_and_drops_causal_pose(self):
+        bridge = Smpl0901Bridge.__new__(Smpl0901Bridge)
+        sentinel = object()
+        bridge.fixed_betas = sentinel
+        bridge.prev_root = sentinel
+        bridge.prev_body = sentinel
+        bridge.prev_translation = sentinel
+        bridge.previous_prediction = sentinel
+        bridge.adaptive_tracker = sentinel
+        bridge.last_adaptive_metadata = sentinel
+        bridge.pelvis_anchor = np.ones(3)
+        bridge.consecutive_unsafe = 7
+
+        bridge._reset_temporal_fit(reset_anchor=False, reason="test")
+
+        self.assertIs(bridge.fixed_betas, sentinel)
+        self.assertIsNone(bridge.prev_root)
+        self.assertIsNone(bridge.prev_body)
+        self.assertIsNone(bridge.prev_translation)
+        self.assertIsNone(bridge.previous_prediction)
+        self.assertIsNone(bridge.adaptive_tracker)
+        np.testing.assert_array_equal(bridge.pelvis_anchor, np.ones(3))
+        self.assertEqual(bridge.consecutive_unsafe, 0)
+
+    def test_timestamp_rewind_resets_pose_and_root_anchor(self):
+        bridge = Smpl0901Bridge.__new__(Smpl0901Bridge)
+        bridge.last_input_ptp_ns = 200
+        bridge.fixed_betas = object()
+        bridge.prev_root = object()
+        bridge.prev_body = object()
+        bridge.prev_translation = object()
+        bridge.previous_prediction = object()
+        bridge.adaptive_tracker = object()
+        bridge.last_adaptive_metadata = object()
+        bridge.pelvis_anchor = np.ones(3)
+        bridge.consecutive_unsafe = 3
+
+        bridge._observe_stream_timestamp(100)
+
+        self.assertEqual(bridge.last_input_ptp_ns, 100)
+        self.assertIsNone(bridge.prev_root)
+        self.assertIsNone(bridge.adaptive_tracker)
+        self.assertIsNone(bridge.pelvis_anchor)
+
     def test_raw_skeleton_coordinate_frame_has_fixed_utf8_limit(self):
         with self.assertRaisesRegex(ValueError, "coordinate frame"):
             pack_raw_skeleton_frame(
