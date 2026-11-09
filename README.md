@@ -3,6 +3,9 @@
 這是一份可獨立放上 GitHub 的「`main_predict` 59 點 3D 關節 → SMPL → Unity」常駐即時轉換服務。它接在 3D 姿態估計管線（`dt-pose`）後面，不負責相機影像 IPC、2D pose 或 DLT；**輸入是已完成 3D 預測的 JSON 串流，原生支援新版 `dt-pose.pose3d/v1` 並向後相容 `factory_59pt_body_hands`；Bridge 平行輸出 Unity `SMV2`（UDP 9095）與原始 59 點 `RSV1`（UDP 9096）二進位封包**。
 
 > 正式預設為 `adaptive-fast`：固定體型後，以 Learnable-SMPLify neural prior、cached/batched Joint IK、0/1/2（連續動作 0/2/4）步短最佳化與區域安全閘門追蹤；原始 Hand21 繼續獨立驅動手指。舊 50-step soft-target 完整保留為 `quality` 回退模式。
+> `adaptive-v6` 是針對新版 PK-SSM 的可選候選：加入逐關節限速／分區 TTL、短期 constant-velocity 補點、快速手臂 gate，以及 reset 後不傳送但可建立內部 seed 的恢復流程。V5 仍是預設；完成實際即時 Unity A/B 前，V6 必須顯式指定。
+> `adaptive-v6.1` 在 V6 前增加軀幹方向、左右語意與骨長防護，針對 PK-SSM 偶發 180° 翻面；目前同樣是顯式啟用的實驗 profile，不改動正式預設。
+> 對上游偶發的 Body17 非有限值，正式模式預設只以前次有效觀測因果補齊 3 個接收幀，且將補入點信心設為 0；逾時仍沿用安全閘門的 `hold_previous`，Hand21 不補值。可用 `SMPL_MISSING_JOINT_HOLD_FRAMES=0` 關閉。
 
 `adaptive-fast` 的幾何信心不再以單一初始化幀鎖定骨長。前 15 幀使用 causal
 median 建立 reference，之後才進入慢速更新；若 reference 與一段持續穩定的觀測
@@ -138,10 +141,22 @@ Bridge 預設每 10 個成功 fit 輸出一筆 `[bridge] distortion {JSON}` stru
 
 | Profile | 用途 | Rig B 同片段實測 |
 | :--- | :--- | :--- |
+| `commercial-generic-ik` | 商用資產隔離路徑；固定骨長 analytic IK + V6.1 輸入方向／解剖 guard；不載入 SMPL、SMPL-X、PyTorch 或 checkpoint | 0927 同幀 1,695 幀：365.90 FPS、p50 50.42 mm、92.21% accepted |
 | `adaptive-fast`（預設） | 即時場域；neural prior + batched IK + adaptive refinement + regional gate | steady-state 49.39 FPS、p50 50.38 mm、31/31 accepted |
+| `adaptive-v6`（PK-SSM 候選） | V5 solver + 分區輸入狀態估計 + motion-aware regional gate | 0927 完整錄製：1,523 accepted、324 HOLD、22 resets；詳見 model-lab 0928 報告 |
+| `adaptive-v6.1`（方向防護） | V6 + 六幀軀幹初始化 + 解剖／翻面 guard + 手臂獨立重新掛接 | 同負載 A/B：13.51 FPS；大於 120° 軀幹翻面 12 → 0 |
 | `quality` | 舊版 50-step optimizer；A/B 與緊急回退 | 精度優先，速度約 2–4 FPS |
 
 上述正式 Bridge smoke test 使用既有 Rig B 最長連續 accepted 片段（20 幀體型校正、1 幀 seed、30 幀 steady state）；時間只計 SMPL solver，不含上游 Pipeline、UDP、Dashboard 與 Unity。`adaptive-fast` 的首幀使用高品質 optimizer 建立可信 seed，之後才切換快速追蹤。切換 profile 不改變 UDP 9100、SMV2/9095、RSV1/9096 或 Unity 設定；同一時間只能啟動一個 Bridge。
+`commercial-generic-ik` 的 mesh、材質與 avatar 必須另選可商用授權資產。它輸出與既有 Unity 相容的
+SMV2 22-body rotations 與 RSV1/Hand21；預設不載入或產生 SMPL/SMPL-X surface。完整比較與影片位於
+`model_lab/comparisons/runs/20260929_commercial_generic_ik/`。
+
+Generic IK 本身會在下肢觀測有效時解算髖、膝與踝，並以全身關節計算殘差；腿部暫時缺點時才退回
+上半身品質閘門。若指定 `--smplx-preview-json`，可選擇性使用授權的 SMPL-X neutral 資產，把
+Generic IK 的全身旋轉與左右 Hand21（各 15 個手指關節旋轉）forward 成 Dashboard surface。
+這個 SMPL-X surface 只是視覺化蒙皮，不會把 Generic IK 改成 SMPL fitting，且須遵守 SMPL-X 授權。
+
 
 ### 核心演算法亮點
 1. **Fixed Betas 體型鎖定**：預設收集 30 個通過目前 profile 品質閘門的 frame，估計一次性身材參數 $\beta$，並將每個係數限制在 `[-3,3]`，避免遮擋點被永久吸收到體型。
@@ -228,6 +243,29 @@ smpl-0901-bridge \
   --fit-jsonl artifacts/live/smpl_fit.jsonl
 ```
 
+新版 PK-SSM 的 V6 A/B 啟動方式只需將 solver 改為：
+
+```bash
+# CLI
+--solver-profile adaptive-v6
+
+# 若要驗證方向防護版
+--solver-profile adaptive-v6.1
+
+# Docker Compose
+sudo UNITY_HOST=192.168.200.1 \
+  SMPL_SOLVER_PROFILE=adaptive-v6 \
+  docker compose up -d --build --force-recreate bridge
+```
+
+商用資產隔離模式：
+
+```bash
+sudo UNITY_HOST=192.168.200.1 \
+  SMPL_SOLVER_PROFILE=commercial-generic-ik \
+  docker compose up -d --build --force-recreate bridge
+```
+
 ### 步驟 2：啟動 Pipeline 推送串流 (已內建於 run-gx10.sh)
 ```bash
 cd /path/to/digital-twin-pose
@@ -251,3 +289,5 @@ unity/SMPL0901Player/      獨立的 SMV2/RSV1 Hybrid Unity 播放器
 unity/CustomSMPL/          舊版播放器參考副本
 tests/                     輸入 schema 與 Python/Unity protocol contract 測試
 ```
+若目前只需要 Dashboard 診斷而尚未決定 Unity 接收端，可傳入 `--unity-port 0` 停用 SMV2 UDP；
+`--fit-jsonl` 仍會持續輸出 Generic IK 求解結果。

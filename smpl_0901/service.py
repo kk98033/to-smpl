@@ -71,6 +71,46 @@ class JointFrame:
     ptp_exact: bool
 
 
+class CausalBodyJointImputer:
+    """Carry a missing Body17 observation forward for a short causal window.
+
+    Imputed joints receive zero confidence, so adaptive-fast can keep a finite
+    geometry tensor without treating stale coordinates as reliable evidence.
+    Hand21 values are deliberately never imputed.
+    """
+
+    def __init__(self, max_hold_frames: int = 3) -> None:
+        self.max_hold_frames = int(max_hold_frames)
+        self.reset()
+
+    def reset(self) -> None:
+        self._last_body = np.full((17, 3), np.nan, dtype=np.float32)
+        self._age = np.full(17, self.max_hold_frames + 1, dtype=np.int32)
+
+    def fill(
+        self, joints: np.ndarray, confidence: np.ndarray
+    ) -> tuple[np.ndarray, np.ndarray, tuple[int, ...]]:
+        points = np.asarray(joints, dtype=np.float32)
+        scores = np.asarray(confidence, dtype=np.float32).reshape(-1)
+        if points.shape != (59, 3) or scores.shape != (59,):
+            raise ValueError("causal imputer expects joints [59,3] and confidence [59]")
+        output = points.copy()
+        output_scores = scores.copy()
+        self._age = np.minimum(self._age + 1, self.max_hold_frames + 1)
+        observed = np.isfinite(points[:17]).all(axis=1)
+        self._last_body[observed] = points[:17][observed]
+        self._age[observed] = 0
+        missing = ~observed
+        fillable = (
+            missing
+            & np.isfinite(self._last_body).all(axis=1)
+            & (self._age <= self.max_hold_frames)
+        )
+        output[:17][fillable] = self._last_body[fillable]
+        output_scores[:17][fillable] = 0.0
+        return output, output_scores, tuple(np.flatnonzero(fillable).tolist())
+
+
 class CalibrationPending(RuntimeError):
     """Normal startup state while the fixed-beta window is being collected."""
 
@@ -659,8 +699,21 @@ class Smpl0901Bridge:
         self.adaptive_tracker = None
         self.last_adaptive_metadata = None
         self.pelvis_anchor = None
+        self.last_input_ptp_ns = None
+        self.consecutive_unsafe = 0
+        self.joint_imputer = CausalBodyJointImputer(
+            getattr(args, "missing_joint_hold_frames", 3)
+        )
+        self.v6_input_adapter = None
+        self.last_v61_input_metadata = None
+        if args.solver_profile == "adaptive-v6":
+            from .pkssm_v6 import RegionalJointStateEstimator
+            self.v6_input_adapter = RegionalJointStateEstimator()
+        elif args.solver_profile == "adaptive-v6.1":
+            from .pkssm_v61 import OrientationAnatomyStateEstimator
+            self.v6_input_adapter = OrientationAnatomyStateEstimator()
         self.neural_prior = None
-        if args.solver_profile == "adaptive-fast":
+        if args.solver_profile in ("adaptive-fast", "adaptive-v6", "adaptive-v6.1"):
             from .learnable_prior import LearnableSmplifyPrior
             self.neural_prior = LearnableSmplifyPrior(
                 args.learnable_source, args.learnable_checkpoint,
@@ -671,6 +724,11 @@ class Smpl0901Bridge:
         if args.record_unity_packets is not None:
             from .unity_fake_sender import UnityPacketRecorder
             self.packet_recorder = UnityPacketRecorder(args.record_unity_packets)
+        elif args.dashboard_recording_control is not None:
+            from .unity_fake_sender import ControlledUnityPacketRecorder
+            self.packet_recorder = ControlledUnityPacketRecorder(
+                args.dashboard_recording_control
+            )
         self.raw_destination = (
             args.raw_skeleton_host or args.unity_host, args.raw_skeleton_port
         ) if args.raw_skeleton_port else None
@@ -707,7 +765,10 @@ class Smpl0901Bridge:
         if args.smplx_preview_json is not None:
             from .smplx_preview import SmplXPreview
 
-            self.smplx_preview = SmplXPreview(args.smplx_model, self.device)
+            self.smplx_preview = SmplXPreview(
+                args.smplx_model, self.device, beta_scale=args.smplx_beta_scale,
+                surface_retarget=args.smplx_surface_retarget,
+            )
             full_weights = self.smplx_preview.model.lbs_weights.detach().cpu().numpy()
             full_faces = self.smplx_preview.faces
             hand_influence = (
@@ -745,6 +806,41 @@ class Smpl0901Bridge:
             self.packet_recorder.close()
         self.sock.close()
 
+    def _reset_temporal_fit(self, *, reset_anchor: bool, reason: str) -> None:
+        """Drop causal solver state while retaining the calibrated body shape.
+
+        PK-SSM can explicitly re-initialize after an occlusion and Fake Sender
+        can rewind PTP at a loop boundary. Neither event should force the
+        adaptive solver to keep comparing a new track with an unrelated old
+        pose. Fixed betas survive because they describe the same subject.
+        """
+        self.prev_root = None
+        self.prev_body = None
+        self.prev_translation = None
+        self.previous_prediction = None
+        self.adaptive_tracker = None
+        self.last_adaptive_metadata = None
+        self.consecutive_unsafe = 0
+        joint_imputer = getattr(self, "joint_imputer", None)
+        if joint_imputer is not None:
+            joint_imputer.reset()
+        v6_input_adapter = getattr(self, "v6_input_adapter", None)
+        if v6_input_adapter is not None:
+            v6_input_adapter.reset()
+        if reset_anchor:
+            self.pelvis_anchor = None
+        print(f"[bridge] temporal fit reset: {reason}", flush=True)
+
+    def _observe_stream_timestamp(self, timestamp_ns: int) -> None:
+        current = int(timestamp_ns)
+        previous = self.last_input_ptp_ns
+        if previous is not None and current <= previous:
+            self._reset_temporal_fit(
+                reset_anchor=True,
+                reason=f"PTP rewind/non-monotonic timestamp {previous} -> {current}",
+            )
+        self.last_input_ptp_ns = current
+
     def _calibrate(self) -> None:
         from .fixed_betas_fitter import estimate_fixed_betas
 
@@ -757,24 +853,89 @@ class Smpl0901Bridge:
         )
         print(f"[bridge] calibration complete; fixed betas={self.fixed_betas.cpu().numpy().round(3).tolist()}")
 
+    def _initialize_adaptive_tracker(
+        self, target_np: np.ndarray, timestamp_ns: int, result, pred_smpl24: np.ndarray
+    ) -> None:
+        if (
+            self.args.solver_profile not in ("adaptive-fast", "adaptive-v6", "adaptive-v6.1")
+            or self.adaptive_tracker is not None
+        ):
+            return
+        if self.args.solver_profile in ("adaptive-v6", "adaptive-v6.1"):
+            from .adaptive_tracker_v6 import AdaptiveV6Tracker as TrackerClass
+        else:
+            from .adaptive_tracker import AdaptiveFastTracker as TrackerClass
+        self.adaptive_tracker = TrackerClass(
+            self.smpl_layer, self.regressor, self.fixed_betas, self.neural_prior,
+            og_stride=self.args.adaptive_og_stride,
+            coherence_threshold=self.args.adaptive_coherence_threshold,
+            speed_threshold=self.args.adaptive_speed_threshold,
+            medium_steps=self.args.adaptive_medium_steps,
+            high_steps=self.args.adaptive_high_steps,
+        )
+        self.adaptive_tracker.initialize(
+            target_np, timestamp_ns, result.root_orient,
+            result.body_pose, result.translation, pred_smpl24,
+        )
+
     def process(self, frame: JointFrame) -> tuple[bytes, float]:
         from .fixed_betas_fitter import fit_fixed_betas_soft_target
         from .frame0_initializer import analytical_root_seed
         from .protocol_v2 import wrist_local_hand
         from .protocol_v2_udp import pack_protocol_v2_frame
 
-        body25, left_hand, right_hand = body25_from_factory59(frame.joints)
-        body25_conf = body25_confidence_from_factory59(frame.confidence)
-        selected = FIT_PROFILES[self.args.fit_profile]
-        if (
-            not np.isfinite(body25[list(selected)]).all()
-            or (
-                self.args.solver_profile == "quality"
-                and not np.all(body25_conf[list(selected)] >= self.args.min_confidence)
+        self._observe_stream_timestamp(frame.ptp_epoch_ns)
+        input_joints = frame.joints
+        input_confidence = frame.confidence
+        imputed_factory59_joints: tuple[int, ...] = ()
+        stale_factory59_joints: tuple[int, ...] = ()
+        rejected_outlier_factory59_joints: tuple[int, ...] = ()
+        if self.args.solver_profile in ("adaptive-v6", "adaptive-v6.1"):
+            completed = self.v6_input_adapter.update(
+                frame.joints, frame.confidence, frame.ptp_epoch_ns
             )
+            input_joints = completed.joints
+            input_confidence = completed.confidence
+            imputed_factory59_joints = completed.predicted
+            stale_factory59_joints = completed.stale
+            rejected_outlier_factory59_joints = completed.rejected_outliers
+            if self.args.solver_profile == "adaptive-v6.1":
+                self.last_v61_input_metadata = {
+                    "ready": bool(completed.ready),
+                    "stable_streak": int(completed.stable_streak),
+                    "corrected_left_right": bool(completed.corrected_left_right),
+                    "rejected_regions": list(completed.rejected_regions),
+                    "orientation_jump_deg": completed.orientation_jump_deg,
+                    "shoulder_jump_deg": completed.shoulder_jump_deg,
+                }
+                if not completed.ready:
+                    raise CalibrationPending(
+                        "V6.1 waiting for stable orientation/anatomy: "
+                        f"{completed.stable_streak}/{self.v6_input_adapter.stable_frames}"
+                    )
+        elif (
+            self.args.solver_profile == "adaptive-fast"
+            and self.joint_imputer.max_hold_frames > 0
         ):
+            input_joints, input_confidence, imputed_factory59_joints = (
+                self.joint_imputer.fill(frame.joints, frame.confidence)
+            )
+        body25, left_hand, right_hand = body25_from_factory59(input_joints)
+        body25_conf = body25_confidence_from_factory59(input_confidence)
+        selected = FIT_PROFILES[self.args.fit_profile]
+        missing_body25 = [
+            int(index) for index in selected
+            if not np.isfinite(body25[index]).all()
+        ]
+        low_confidence_body25 = [
+            int(index) for index in selected
+            if body25_conf[index] < self.args.min_confidence
+        ] if self.args.solver_profile == "quality" else []
+        if missing_body25 or low_confidence_body25:
             raise ValueError(
-                f"{self.args.fit_profile} input is incomplete/non-finite; "
+                f"{self.args.fit_profile} input rejected: "
+                f"missing Body25 joints={missing_body25}, "
+                f"low-confidence Body25 joints={low_confidence_body25}; "
                 "holding the last Unity pose"
             )
 
@@ -803,7 +964,7 @@ class Smpl0901Bridge:
             else self.prev_body.detach().cpu().numpy().reshape(23, 3)
         )
         self.last_adaptive_metadata = None
-        if self.args.solver_profile == "adaptive-fast" and self.prev_root is not None:
+        if self.args.solver_profile in ("adaptive-fast", "adaptive-v6", "adaptive-v6.1") and self.prev_root is not None:
             result, self.last_adaptive_metadata = self.adaptive_tracker.step(
                 target_np, body25_conf, frame.ptp_epoch_ns,
                 self.prev_root, self.prev_body, self.prev_translation,
@@ -819,7 +980,7 @@ class Smpl0901Bridge:
                 init_root = self.prev_root
             iterations = (
                 self.args.adaptive_seed_iterations
-                if self.args.solver_profile == "adaptive-fast" else self.args.iterations
+                if self.args.solver_profile in ("adaptive-fast", "adaptive-v6", "adaptive-v6.1") else self.args.iterations
             )
             result = fit_fixed_betas_soft_target(
                 self.smpl_layer, self.regressor, target, self.fixed_betas, init_root,
@@ -883,7 +1044,27 @@ class Smpl0901Bridge:
             facing_mismatch_deg=facing_mismatch_deg,
             max_facing_mismatch_deg=self.args.max_facing_mismatch_deg,
         )
-        input_score = float(np.mean(frame.confidence))
+        if (
+            self.args.solver_profile in ("adaptive-v6", "adaptive-v6.1")
+            and self.last_adaptive_metadata is not None
+        ):
+            # V6 already gates torso and both arms independently. A bad arm
+            # must not reject an otherwise valid torso or opposite arm.
+            updates = self.last_adaptive_metadata.region_updates
+            safety_reasons = [] if any(updates.values()) else ["regional_gate:no_update"]
+        if safety_reasons:
+            self.consecutive_unsafe += 1
+        else:
+            self.consecutive_unsafe = 0
+        reinitialize_after = int(getattr(
+            self.args, "reinitialize_after_rejections", 8
+        ))
+        reinitialize_next = bool(
+            safety_reasons
+            and reinitialize_after > 0
+            and self.consecutive_unsafe >= reinitialize_after
+        )
+        input_score = float(np.mean(input_confidence))
         packet_frame = {
             "protocolVersion": 2,
             "frameId": frame.frame_id,
@@ -917,7 +1098,7 @@ class Smpl0901Bridge:
             },
         }
         candidate_packet = pack_protocol_v2_frame(packet_frame)
-        factory59_relative = frame.joints - pelvis_world
+        factory59_relative = input_joints - pelvis_world
         self.last_fit_record = {
             "schema": "smpl-0901.fit/v1",
             "frame": frame.frame_id,
@@ -929,6 +1110,10 @@ class Smpl0901Bridge:
             "coordinate_frame": "smpl_axes_pelvis_relative",
             "axis_map": self.args.axis_map,
             "fit_profile": self.args.fit_profile,
+            "imputed_factory59_joints": list(imputed_factory59_joints),
+            "stale_factory59_joints": list(stale_factory59_joints),
+            "rejected_outlier_factory59_joints": list(rejected_outlier_factory59_joints),
+            "missing_joint_hold_frames": self.joint_imputer.max_hold_frames,
             "solver": {
                 "profile": self.args.solver_profile,
                 "endpoint_weight": self.args.endpoint_weight,
@@ -953,6 +1138,8 @@ class Smpl0901Bridge:
             "fit_elapsed_ms": result.elapsed_seconds * 1000.0,
             "fit_iterations": result.iterations,
             "body_facing_mismatch_deg": facing_mismatch_deg,
+            "consecutive_unsafe": int(self.consecutive_unsafe),
+            "reinitialize_next": reinitialize_next,
             "worst_target_joint": worst_target_joint,
             "pose_diagnostics": pose_diagnostics,
             "fixed_betas": self.fixed_betas.cpu().numpy().tolist(),
@@ -969,6 +1156,7 @@ class Smpl0901Bridge:
                     "region_confidence": self.last_adaptive_metadata.region_confidence,
                 }
             ),
+            "v61_input": self.last_v61_input_metadata,
         }
         if self.mesh_vertex_indices_torch is not None and self.mesh_faces is not None:
             preview_vertices = (
@@ -1017,7 +1205,7 @@ class Smpl0901Bridge:
                 "source_vertex_count": int(smplx.vertices.shape[1]),
                 "left_hand_valid": smplx.left_valid,
                 "right_hand_valid": smplx.right_valid,
-                "surface_retarget": "skin_weighted_smpl24",
+                "surface_retarget": self.args.smplx_surface_retarget,
                 "mesh_topology": self.smplx_topology,
                 "retargeted_smpl22": _json_points(
                     smplx.joints[0, :22].detach().cpu().numpy()
@@ -1026,7 +1214,31 @@ class Smpl0901Bridge:
                 "faces": self.smplx_faces.tolist(),
                 "face_joint": self.smplx_face_joints.tolist(),
             }
+        if (
+            safety_reasons
+            and self.args.solver_profile in ("adaptive-v6", "adaptive-v6.1")
+            and self.adaptive_tracker is None
+        ):
+            # Bootstrap V6 internal state even when the seed is not safe enough
+            # to send.  Otherwise every following frame repeats an expensive
+            # 50-step Frame-0 fit and the regional tracker never gets a chance
+            # to recover. Unity still receives the previous safe packet.
+            self._initialize_adaptive_tracker(
+                target_np, frame.ptp_epoch_ns, result, pred_smpl24
+            )
+            self.prev_root = result.root_orient.detach()
+            self.prev_body = result.body_pose.detach()
+            self.prev_translation = result.translation.detach()
+            self.previous_prediction = result.pred_body25[0].detach().cpu().numpy()
+
         if safety_reasons:
+            unsafe_streak = int(self.consecutive_unsafe)
+            if reinitialize_next:
+                self._reset_temporal_fit(
+                    reset_anchor=False,
+                    reason=(f"{unsafe_streak} consecutive unsafe fits; "
+                            "requesting a fresh Frame-0 seed"),
+                )
             raise UnsafeFit({
                 "schema": "smpl-0901.distortion-log/v1",
                 "frame": frame.frame_id,
@@ -1044,22 +1256,17 @@ class Smpl0901Bridge:
                 "worst_twist": pose_diagnostics["worst_twist"],
                 "worst_delta": pose_diagnostics["worst_delta"],
                 "warning_joints": pose_diagnostics["warning_joints"],
+                "consecutive_unsafe": unsafe_streak,
+                "reinitialize_next": reinitialize_next,
+                "imputed_factory59_joints": list(imputed_factory59_joints),
+                "stale_factory59_joints": list(stale_factory59_joints),
+                "rejected_outlier_factory59_joints": list(rejected_outlier_factory59_joints),
+                "missing_joint_hold_frames": self.joint_imputer.max_hold_frames,
             }, candidate_packet)
 
-        if self.args.solver_profile == "adaptive-fast" and self.adaptive_tracker is None:
-            from .adaptive_tracker import AdaptiveFastTracker
-            self.adaptive_tracker = AdaptiveFastTracker(
-                self.smpl_layer, self.regressor, self.fixed_betas, self.neural_prior,
-                og_stride=self.args.adaptive_og_stride,
-                coherence_threshold=self.args.adaptive_coherence_threshold,
-                speed_threshold=self.args.adaptive_speed_threshold,
-                medium_steps=self.args.adaptive_medium_steps,
-                high_steps=self.args.adaptive_high_steps,
-            )
-            self.adaptive_tracker.initialize(
-                target_np, frame.ptp_epoch_ns, result.root_orient,
-                result.body_pose, result.translation, pred_smpl24,
-            )
+        self._initialize_adaptive_tracker(
+            target_np, frame.ptp_epoch_ns, result, pred_smpl24
+        )
         self.prev_root = result.root_orient.detach()
         self.prev_body = result.body_pose.detach()
         self.prev_translation = result.translation.detach()
@@ -1118,15 +1325,20 @@ def parse_args() -> argparse.Namespace:
         "--record-unity-packets", type=Path,
         help="overwrite a JSONL capture with exact outgoing SMV2/RSV1 datagrams",
     )
+    parser.add_argument(
+        "--dashboard-recording-control", type=Path,
+        help="control JSON used by Dashboard to start/stop exact Unity packet recording",
+    )
     parser.add_argument("--smpl-dir", type=Path, default=default_smpl_dir())
     parser.add_argument("--device", default="cuda")
     parser.add_argument("--calibration-frames", type=int, default=30)
     parser.add_argument("--calibration-iterations", type=int, default=100)
     parser.add_argument("--iterations", type=int, default=100)
     parser.add_argument(
-        "--solver-profile", choices=("adaptive-fast", "quality"),
+        "--solver-profile", choices=("commercial-generic-ik", "adaptive-fast", "adaptive-v6", "adaptive-v6.1", "quality"),
         default="adaptive-fast",
-        help="adaptive-fast is the v5 production tracker; quality keeps the legacy optimizer",
+        help=("commercial-generic-ik is asset-independent analytic IK; adaptive-fast is the V5 production tracker; adaptive-v6 adds "
+              "PK-SSM regional completion/gating; adaptive-v6.1 adds startup orientation and anatomy stabilization; quality keeps the legacy optimizer"),
     )
     parser.add_argument(
         "--learnable-source", type=Path,
@@ -1139,6 +1351,20 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--adaptive-speed-threshold", type=float, default=0.3)
     parser.add_argument("--adaptive-medium-steps", type=int, default=1)
     parser.add_argument("--adaptive-high-steps", type=int, default=2)
+    parser.add_argument(
+        "--missing-joint-hold-frames", type=int, default=3,
+        help=("adaptive-fast only: causally fill missing Body17 joints from "
+              "the last observation for at most this many received frames; 0 disables"),
+    )
+    parser.add_argument(
+        "--commercial-max-residual-mm", type=float, default=180.0,
+        help="Generic IK hold threshold; 0 disables the residual gate",
+    )
+    parser.add_argument(
+        "--reinitialize-after-rejections", type=int, default=8,
+        help=("discard temporal pose state and run a fresh Frame-0 seed after "
+              "this many consecutive safety-gate rejections; 0 disables"),
+    )
     parser.add_argument(
         "--fit-profile", choices=tuple(FIT_PROFILES), default="full",
         help="full fits through ankles; upper-body ignores occluded legs and freezes their rotations",
@@ -1173,6 +1399,14 @@ def parse_args() -> argparse.Namespace:
             "maximum triangles in the Dashboard-only SMPL-X body/hand surface; "
             "20908 retains the complete official neutral-model topology"
         ),
+    )
+    parser.add_argument(
+        "--smplx-beta-scale", type=float, default=0.0,
+        help="preview-only SMPL beta transfer scale; 0 uses neutral SMPL-X shape",
+    )
+    parser.add_argument(
+        "--smplx-surface-retarget", choices=("uniform_torso", "none"),
+        default="uniform_torso",
     )
     parser.add_argument("--endpoint-weight", type=float, default=0.5)
     parser.add_argument("--torso-weight", type=float, default=0.05)
@@ -1220,6 +1454,10 @@ def main() -> int:
     args = parse_args()
     if args.diagnostic_log_every < 0:
         raise ValueError("diagnostic log interval must be non-negative")
+    if args.reinitialize_after_rejections < 0:
+        raise ValueError("reinitialize-after-rejections must be non-negative")
+    if args.missing_joint_hold_frames < 0:
+        raise ValueError("missing-joint-hold-frames must be non-negative")
     if args.body_facing_weight < 0:
         raise ValueError("body facing weight must be non-negative")
     if args.spine_stability_weight < 0:
@@ -1231,14 +1469,17 @@ def main() -> int:
         raise ValueError("fit safety thresholds must be non-negative")
     if args.learnable_checkpoint is None:
         args.learnable_checkpoint = args.smpl_dir / "best_ckpt.pth.tar"
-    if args.solver_profile == "adaptive-fast" and not args.learnable_checkpoint.exists():
+    if args.solver_profile in ("adaptive-fast", "adaptive-v6", "adaptive-v6.1") and not args.learnable_checkpoint.exists():
         print(
-            f"adaptive-fast checkpoint not found: {args.learnable_checkpoint}; "
+            f"adaptive solver checkpoint not found: {args.learnable_checkpoint}; "
             "use --solver-profile quality to run the retained legacy solver",
             file=sys.stderr,
         )
         return 2
-    if not (args.smpl_dir / "smpl" / "SMPL_NEUTRAL.pkl").exists():
+    if (
+        args.solver_profile != "commercial-generic-ik"
+        and not (args.smpl_dir / "smpl" / "SMPL_NEUTRAL.pkl").exists()
+    ):
         print(
             f"SMPL model not found: {args.smpl_dir / 'smpl' / 'SMPL_NEUTRAL.pkl'}",
             file=sys.stderr,
@@ -1255,7 +1496,11 @@ def main() -> int:
             return 2
     print(f"[bridge] input={args.input}")
     print(f"[bridge] solver={args.solver_profile}")
-    print(f"[bridge] Unity={args.unity_host}:{args.unity_port}, units={args.input_units}, axis={args.axis_map}")
+    print(f"[bridge] missing Body17 hold={args.missing_joint_hold_frames} received frames")
+    unity_destination = (
+        f"{args.unity_host}:{args.unity_port}" if args.unity_port else "disabled"
+    )
+    print(f"[bridge] Unity={unity_destination}, units={args.input_units}, axis={args.axis_map}")
     raw_host = args.raw_skeleton_host or args.unity_host
     print(
         f"[bridge] Raw skeleton={raw_host}:{args.raw_skeleton_port}"
@@ -1263,7 +1508,13 @@ def main() -> int:
     )
     if args.record_unity_packets is not None:
         print(f"[bridge] Unity packet recording={args.record_unity_packets}")
-    bridge = Smpl0901Bridge(args)
+    if args.dashboard_recording_control is not None:
+        print(f"[bridge] Dashboard recording control={args.dashboard_recording_control}")
+    if args.solver_profile == "commercial-generic-ik":
+        from .commercial_bridge import CommercialGenericIkBridge
+        bridge = CommercialGenericIkBridge(args)
+    else:
+        bridge = Smpl0901Bridge(args)
     fit_stream = None
     if args.fit_jsonl is not None:
         args.fit_jsonl.parent.mkdir(parents=True, exist_ok=True)
@@ -1332,6 +1583,10 @@ def main() -> int:
                         "worst_twist": pose_diagnostic["worst_twist"],
                         "worst_delta": pose_diagnostic["worst_delta"],
                         "warning_joints": pose_diagnostic["warning_joints"],
+                        "imputed_factory59_joints": fit["imputed_factory59_joints"],
+                        "stale_factory59_joints": fit["stale_factory59_joints"],
+                        "rejected_outlier_factory59_joints": fit["rejected_outlier_factory59_joints"],
+                        "missing_joint_hold_frames": fit["missing_joint_hold_frames"],
                     }
                     print(
                         "[bridge] distortion "

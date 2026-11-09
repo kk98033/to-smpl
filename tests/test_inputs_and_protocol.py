@@ -21,6 +21,7 @@ from smpl_0901.raw_skeleton_udp import (
 from smpl_0901.fixed_betas_fitter import zero_pose_components_
 
 from smpl_0901.service import (
+    CausalBodyJointImputer,
     FACTORY_IDS,
     FIT_PROFILES,
     FORWARD_LOCK_BODY_POSE_INDICES,
@@ -38,6 +39,35 @@ from smpl_0901.service import (
 
 
 class InputContractTests(unittest.TestCase):
+    def test_causal_body_imputer_is_short_lived_and_zero_confidence(self):
+        imputer = CausalBodyJointImputer(max_hold_frames=2)
+        joints = np.arange(59 * 3, dtype=np.float32).reshape(59, 3) / 100.0
+        confidence = np.ones(59, dtype=np.float32)
+
+        first, first_confidence, first_indices = imputer.fill(joints, confidence)
+        np.testing.assert_allclose(first, joints)
+        np.testing.assert_allclose(first_confidence, confidence)
+        self.assertEqual(first_indices, ())
+
+        missing = joints.copy()
+        missing[6] = np.nan
+        held1, held_confidence1, held_indices1 = imputer.fill(missing, confidence)
+        held2, _, held_indices2 = imputer.fill(missing, confidence)
+        expired, _, expired_indices = imputer.fill(missing, confidence)
+        np.testing.assert_allclose(held1[6], joints[6])
+        self.assertEqual(float(held_confidence1[6]), 0.0)
+        self.assertEqual(held_indices1, (6,))
+        self.assertEqual(held_indices2, (6,))
+        self.assertFalse(np.isfinite(expired[6]).all())
+        self.assertEqual(expired_indices, ())
+
+        # Hand21 data is never carried forward by this body-only repair.
+        missing_hand = joints.copy()
+        missing_hand[20] = np.nan
+        hand_output, _, hand_indices = imputer.fill(missing_hand, confidence)
+        self.assertFalse(np.isfinite(hand_output[20]).all())
+        self.assertNotIn(20, hand_indices)
+
     def test_new_main_predict_59_array(self):
         points = np.arange(59 * 3, dtype=np.float32).reshape(59, 3)
         frame = parse_joint_frame(
@@ -357,6 +387,51 @@ class ProtocolTests(unittest.TestCase):
         decoded = unpack_raw_skeleton_frame(bridge.sock.calls[0][0])
         self.assertEqual(decoded["frameId"], 9)
         self.assertEqual(decoded["coordinateFrame"], "factory-world")
+
+
+    def test_temporal_fit_reset_keeps_shape_and_drops_causal_pose(self):
+        bridge = Smpl0901Bridge.__new__(Smpl0901Bridge)
+        sentinel = object()
+        bridge.fixed_betas = sentinel
+        bridge.prev_root = sentinel
+        bridge.prev_body = sentinel
+        bridge.prev_translation = sentinel
+        bridge.previous_prediction = sentinel
+        bridge.adaptive_tracker = sentinel
+        bridge.last_adaptive_metadata = sentinel
+        bridge.pelvis_anchor = np.ones(3)
+        bridge.consecutive_unsafe = 7
+
+        bridge._reset_temporal_fit(reset_anchor=False, reason="test")
+
+        self.assertIs(bridge.fixed_betas, sentinel)
+        self.assertIsNone(bridge.prev_root)
+        self.assertIsNone(bridge.prev_body)
+        self.assertIsNone(bridge.prev_translation)
+        self.assertIsNone(bridge.previous_prediction)
+        self.assertIsNone(bridge.adaptive_tracker)
+        np.testing.assert_array_equal(bridge.pelvis_anchor, np.ones(3))
+        self.assertEqual(bridge.consecutive_unsafe, 0)
+
+    def test_timestamp_rewind_resets_pose_and_root_anchor(self):
+        bridge = Smpl0901Bridge.__new__(Smpl0901Bridge)
+        bridge.last_input_ptp_ns = 200
+        bridge.fixed_betas = object()
+        bridge.prev_root = object()
+        bridge.prev_body = object()
+        bridge.prev_translation = object()
+        bridge.previous_prediction = object()
+        bridge.adaptive_tracker = object()
+        bridge.last_adaptive_metadata = object()
+        bridge.pelvis_anchor = np.ones(3)
+        bridge.consecutive_unsafe = 3
+
+        bridge._observe_stream_timestamp(100)
+
+        self.assertEqual(bridge.last_input_ptp_ns, 100)
+        self.assertIsNone(bridge.prev_root)
+        self.assertIsNone(bridge.adaptive_tracker)
+        self.assertIsNone(bridge.pelvis_anchor)
 
     def test_raw_skeleton_coordinate_frame_has_fixed_utf8_limit(self):
         with self.assertRaisesRegex(ValueError, "coordinate frame"):

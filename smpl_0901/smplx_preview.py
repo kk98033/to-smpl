@@ -183,12 +183,15 @@ class SmplXPreviewResult:
 class SmplXPreview:
     """Load licensed SMPL-X locally and produce a dashboard-only forward mesh."""
 
-    def __init__(self, model_file: Path, device) -> None:
+    def __init__(self, model_file: Path, device, *, beta_scale: float = 0.0,
+                 surface_retarget: str = "uniform_torso") -> None:
         import smplx
         import torch
 
         self.torch = torch
         self.device = device
+        self.beta_scale = float(beta_scale)
+        self.surface_retarget = str(surface_retarget)
         self.model = smplx.create(
             str(model_file.parent.parent), model_type="smplx", gender="neutral",
             ext=model_file.suffix.lstrip("."), use_pca=False,
@@ -204,15 +207,7 @@ class SmplXPreview:
         self.previous_right = np.zeros((15, 3), dtype=np.float32)
 
     def _retarget_surface_to_smpl24(self, output, target_smpl24):
-        """Warp SMPL-X smoothly onto the fitted SMPL skeleton.
-
-        SMPL and SMPL-X share body-pose semantics, but their joint centres and
-        shape spaces are not numerically identical.  Copying rotations alone
-        leaves a visible 5--10 cm offset.  Blend each corresponding joint's
-        translation delta with the official SMPL-X skinning weights; fingers
-        inherit their wrist correction and retain their independently solved
-        rotations.
-        """
+        """Scale official LBS output without a second local vertex warp."""
         torch = self.torch
         target = torch.as_tensor(
             np.asarray(target_smpl24, dtype=np.float32).reshape(24, 3),
@@ -221,21 +216,20 @@ class SmplXPreview:
         pelvis = output.joints[:, 0:1]
         source_joints = output.joints - pelvis
         vertices = output.vertices - pelvis
-        joint_delta = torch.zeros(
-            (1, 55, 3), dtype=vertices.dtype, device=self.device
-        )
-        joint_delta[:, :22] = target[None] - source_joints[:, :22]
-        joint_delta[:, 22:25] = joint_delta[:, 15:16]
-        joint_delta[:, 25:40] = joint_delta[:, 20:21]
-        joint_delta[:, 40:55] = joint_delta[:, 21:22]
-        correction = torch.einsum(
-            "vj,bjk->bvk", self.model.lbs_weights, joint_delta
-        )
-        corrected_vertices = vertices + correction
-        corrected_joints = source_joints.clone()
-        corrected_joints[:, :22] = target[None]
-        corrected_joints[:, 22:55] += joint_delta[:, 22:55]
-        return corrected_vertices, corrected_joints
+        if self.surface_retarget == "none":
+            return vertices, source_joints
+        pairs = ((0, 12), (16, 17), (16, 18), (17, 19),
+                 (18, 20), (19, 21), (1, 4), (2, 5))
+        ratios = []
+        for start, end in pairs:
+            source_length = torch.linalg.vector_norm(
+                source_joints[:, end] - source_joints[:, start])
+            target_length = torch.linalg.vector_norm(target[end] - target[start])
+            if float(source_length) > 1e-5 and float(target_length) > 1e-5:
+                ratios.append(target_length / source_length)
+        scale = torch.median(torch.stack(ratios)) if ratios else vertices.new_tensor(1.0)
+        scale = torch.clamp(scale, 0.75, 1.25)
+        return vertices * scale, source_joints * scale
 
     def forward(
         self,
@@ -275,7 +269,7 @@ class SmplXPreview:
         tensor = self.torch.as_tensor
         with self.torch.no_grad():
             output = self.model(
-                betas=betas.reshape(1, 10),
+                betas=betas.reshape(1, 10) * self.beta_scale,
                 global_orient=tensor(local[0:1], device=self.device),
                 body_pose=tensor(body.reshape(1, 63), device=self.device),
                 left_hand_pose=tensor(left_pose.reshape(1, 45), device=self.device),
